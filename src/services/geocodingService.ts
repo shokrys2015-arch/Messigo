@@ -8,9 +8,8 @@ export interface GeocodingSearchResult {
 }
 
 /**
- * Generates normalized Arabic query variations to handle Egyptian & Arabic spelling differences:
- * e.g. "سيتى سنتر مدينه نصر" -> "سيتي سنتر مدينة نصر"
- *      "النادى الاهلى" -> "النادي الأهلي"
+ * Generates normalized Arabic query variations to handle Egyptian & Arabic spelling differences
+ * and strips apartment/floor/villa unit numbers so map geocoders locate the exact district/compound.
  */
 export function buildArabicSearchVariants(rawQuery: string): string[] {
   const clean = normalizeDigits(rawQuery)
@@ -29,7 +28,6 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
     .replace(/\bالجيزه\b/g, 'الجيزة')
     .replace(/\bالاسكندريه\b|\bالإسكندريه\b|\bاسكندريه\b|\bاسكندرية\b/g, 'الإسكندرية')
     .replace(/\bالمنصوره\b/g, 'المنصورة')
-    .replace(/\bالزقازيق\b/g, 'الزقازيق')
     .replace(/\bالمحله\b/g, 'المحلة')
     .replace(/\bالغردقه\b/g, 'الغردقة')
     .replace(/\bبوابه\b/g, 'بوابة')
@@ -42,15 +40,28 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
     .replace(/\bالاهلي\b|\bالاهلى\b/g, 'الأهلي')
     .replace(/\bالماظه\b|\bالماظة\b/g, 'ألماظة')
     .replace(/\bنزهه\b|\bالنزهه\b/g, 'النزهة')
-    .replace(/\bمصر الجديده\b/g, 'مصر الجديدة');
+    .replace(/\bمصر الجديده\b/g, 'مصر الجديدة')
+    .replace(/\bقطاميه\b/g, 'قطامية')
+    .replace(/\bالقطاميه\b/g, 'القطامية')
+    .replace(/\bالمرحله\b/g, 'المرحلة');
 
-  // Variant 2: Without "فرع" which sometimes confuses strict geocoders
-  const withoutBranch = standardized
+  // Variant 2: Strip unit/villa/floor/gate numbers ("فيلا 331", "الدور الأول", "شقة 4", "الدخول من بوابة 4", leading house numbers)
+  // so the geocoder finds the compound/neighborhood cleanly!
+  const cleanedLandmarkOrDistrict = standardized
+    .replace(/(?:الدخول من\s*)?بوابة\s*\d+/g, '')
+    .replace(/الدور\s+\S+/g, '')
+    .replace(/شقة\s*\d+/g, '')
+    .replace(/فيلا\s*\d+/g, '')
+    .replace(/المرحلة\s*\d+/g, '')
+    .replace(/^\d+\s+/, '')
     .replace(/\bفرع\s+/g, '')
+    .replace(/[،,]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  return Array.from(new Set([standardized, clean, withoutBranch].filter(Boolean)));
+  return Array.from(
+    new Set([standardized, cleanedLandmarkOrDistrict, clean].filter((s) => s.length >= 2))
+  );
 }
 
 /**
@@ -164,7 +175,7 @@ async function fetchNominatimResults(query: string): Promise<GeocodingSearchResu
 /**
  * Multi-provider Arabic & English place search:
  * 1. Checks if the user pasted a Google Maps URL or direct coordinates (lat, lng).
- * 2. Normalizes Egyptian/Arabic spelling variations (e.g. سيتى سنتر مدينه نصر -> سيتي سنتر مدينة نصر).
+ * 2. Normalizes Egyptian/Arabic spelling variations and unit numbers.
  * 3. Queries Photon (OSM), ArcGIS World Geocoder, and Nominatim, combining and deduplicating results.
  */
 export async function searchPlaceNominatim(query: string): Promise<GeocodingSearchResult[]> {
@@ -207,7 +218,7 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
     }
   }
 
-  // 3. Build Arabic spelling variants and query providers
+  // 3. Build Arabic spelling & unit-stripped variants and query providers
   const variants = buildArabicSearchVariants(cleanQuery);
   const primaryVariant = variants[0] || cleanQuery;
 
@@ -217,17 +228,16 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
     fetchNominatimResults(primaryVariant),
   ]);
 
-  let combined = [...photonRes, ...arcgisRes, ...nominatimRes];
+  const combined = [...photonRes, ...arcgisRes, ...nominatimRes];
 
-  // If primary variant returned nothing or only 1 broad result and we have another variant, try it too
-  if (combined.length === 0 && variants.length > 1) {
+  if (variants.length > 1) {
     for (let i = 1; i < variants.length; i++) {
       const [p2, a2] = await Promise.all([
         fetchPhotonResults(variants[i]),
         fetchArcGisResults(variants[i]),
       ]);
       combined.push(...p2, ...a2);
-      if (combined.length > 0) break;
+      if (combined.length >= 4) break;
     }
   }
 
@@ -312,7 +322,6 @@ export function calculateDistanceMetersBetweenCoords(a: Coordinates, b: Coordina
  * without deleting any duplicate order.
  */
 export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): DeliveryOrder[] {
-  // First pass: validate coordinates and base status
   const updated = orders.map((order) => {
     const copy: DeliveryOrder = {
       ...order,
@@ -352,7 +361,7 @@ export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): Delive
     return copy;
   });
 
-  // Second pass: detect orders sharing the exact same (or within 20m) location
+  // Detect orders sharing the exact same (or within 20m) location
   for (let i = 0; i < updated.length; i++) {
     const a = updated[i];
     if (!a.coordinates || !isValidCoordinates(a.coordinates.lat, a.coordinates.lng)) continue;

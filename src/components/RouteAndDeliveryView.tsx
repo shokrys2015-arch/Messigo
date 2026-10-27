@@ -19,6 +19,7 @@ import {
   formatDistanceArabic,
   formatDurationArabic,
 } from '../services/routingService';
+import { calculateDistanceMetersBetweenCoords } from '../services/geocodingService';
 
 interface RouteAndDeliveryViewProps {
   orders: DeliveryOrder[];
@@ -149,9 +150,9 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
 
     const startIcon = L.divIcon({
       className: 'messigo-pin',
-      html: `<div style="width:38px;height:38px;border-radius:12px;background:#0f172a;border:3px solid #ffffff;box-shadow:0 6px 16px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;color:#38bdf8;font-weight:800;font-size:13px;">البداية</div>`,
-      iconSize: [44, 38],
-      iconAnchor: [22, 19],
+      html: `<div style="width:44px;height:36px;border-radius:10px;background:#0f172a;border:2.5px solid #ffffff;box-shadow:0 6px 16px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;color:#38bdf8;font-weight:800;font-size:12px;">البداية</div>`,
+      iconSize: [44, 36],
+      iconAnchor: [22, 18],
     });
 
     L.marker(startCoords, { icon: startIcon, zIndexOffset: 900 })
@@ -163,12 +164,34 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
       )
       .addTo(map);
 
-    // 3. Draw Numbered Customer Markers
-    orderedVisitItems.forEach((item) => {
+    // 3. Draw Numbered Customer Markers (with automatic side-by-side offset when 2+ stops share the same coordinates!)
+    orderedVisitItems.forEach((item, idx) => {
       const { order, visitNumber, leg } = item;
       if (!order.coordinates) return;
 
-      const pos: [number, number] = [order.coordinates.lat, order.coordinates.lng];
+      // Check how many earlier stops in the sequence share the exact same (or <20m) location
+      let sameSpotPriorCount = 0;
+      let sameSpotTotalCount = 0;
+      for (let j = 0; j < orderedVisitItems.length; j++) {
+        const otherCoords = orderedVisitItems[j].order.coordinates;
+        if (!otherCoords) continue;
+        if (calculateDistanceMetersBetweenCoords(order.coordinates, otherCoords) <= 20) {
+          sameSpotTotalCount++;
+          if (j < idx) sameSpotPriorCount++;
+        }
+      }
+
+      // Apply a slight visual offset if multiple orders share the exact same coordinates so no number is hidden!
+      let displayLat = order.coordinates.lat;
+      let displayLng = order.coordinates.lng;
+      if (sameSpotTotalCount > 1) {
+        const angle = (2 * Math.PI * sameSpotPriorCount) / sameSpotTotalCount;
+        const offsetDeg = 0.00035; // ~35m visual separation when zoomed, and distinct icon offset
+        displayLat += Math.sin(angle) * offsetDeg;
+        displayLng += Math.cos(angle) * offsetDeg;
+      }
+
+      const pos: [number, number] = [displayLat, displayLng];
       boundsPoints.push(pos);
 
       const isDelivered = order.deliveryStatus === 'تم التسليم';
@@ -186,13 +209,19 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
           ? 'box-shadow: 0 0 0 4px rgba(2,132,199,0.3), 0 6px 16px rgba(15,23,42,0.3); transform: scale(1.1);'
           : 'box-shadow: 0 4px 12px rgba(15,23,42,0.25);';
 
+      // Pixel anchor offset when multiple markers share the same coordinates so they appear side-by-side even at wide zoom!
+      const pixelOffsetX =
+        sameSpotTotalCount > 1
+          ? Math.round((sameSpotPriorCount - (sameSpotTotalCount - 1) / 2) * 28)
+          : 0;
+
       const markerIcon = L.divIcon({
         className: 'messigo-pin',
         html: `<div style="width:34px;height:34px;border-radius:9999px;background:${bgColor};border:2.5px solid #ffffff;${ringStyle}display:flex;align-items:center;justify-content:center;color:#ffffff;font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;transition:transform 0.15s ease;">
           ${isDelivered ? `✓${visitNumber}` : visitNumber}
         </div>`,
         iconSize: [34, 34],
-        iconAnchor: [17, 17],
+        iconAnchor: [17 - pixelOffsetX, 17],
       });
 
       const gmapsLink = buildGoogleMapsDirectionUrl(order.coordinates, order.mapUrl);
@@ -201,7 +230,9 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
         <div style="font-family:'IBM Plex Sans Arabic',sans-serif;text-align:right;min-width:210px;">
           <div style="font-size:11px;color:#64748b;margin-bottom:2px;">
             زيارة رقم <strong>${visitNumber}</strong> · ${
-        isDelivered ? '<span style="color:#16a34a;font-weight:700;">تم التسليم</span>' : 'قيد الانتظار'
+        isDelivered
+          ? '<span style="color:#16a34a;font-weight:700;">تم التسليم</span>'
+          : 'قيد الانتظار'
       }
           </div>
           <div style="font-weight:700;color:#0f172a;font-size:14px;">${
@@ -251,7 +282,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
     });
 
     if (boundsPoints.length > 0 && !selectedOrderId) {
-      map.fitBounds(L.latLngBounds(boundsPoints), { padding: [40, 40], maxZoom: 16 });
+      map.fitBounds(L.latLngBounds(boundsPoints), { padding: [45, 45], maxZoom: 16 });
     }
   }, [route, orderedVisitItems, currentDeliveryItem?.order.id, selectedOrderId]);
 
@@ -291,7 +322,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Historical Day Read-Only Banner (Section 11 Requirement) */}
+      {/* Historical Day Read-Only Banner */}
       {isHistoricalDay && (
         <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
@@ -357,7 +388,8 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
           <div className="p-3.5 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
             <div className="text-xs text-emerald-900">تم تسليمها</div>
             <div className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-emerald-700 mt-1">
-              {deliveredCount} <span className="text-xs font-normal">من {orderedVisitItems.length}</span>
+              {deliveredCount}{' '}
+              <span className="text-xs font-normal">من {orderedVisitItems.length}</span>
             </div>
           </div>
 
@@ -370,7 +402,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
         </div>
       </div>
 
-      {/* Section 10: «التوصيل الحالي» (Current & Next Order Tracking Panel) */}
+      {/* Section 10: «التوصيل الحالي» */}
       <div className="bg-white border border-sky-200 rounded-2xl p-5 shadow-xs">
         <div className="flex items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-100">
           <div className="flex items-center gap-2">
@@ -535,7 +567,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
             خريطة خط السير التفاعلية (تنتهي عند آخر عميل دون العودة لنقطة البداية)
           </h3>
 
-          {/* Map Legend (مفتاح العلامات والألوان) */}
+          {/* Map Legend */}
           <div className="flex flex-wrap items-center gap-4 text-xs text-slate-700">
             <span className="inline-flex items-center gap-1.5">
               <span className="w-3 h-3 rounded-xs bg-slate-900 inline-block" />
@@ -596,7 +628,6 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
               >
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="flex items-start gap-3.5">
-                    {/* Visit Number Badge */}
                     <div
                       className={`w-10 h-10 rounded-xl font-mono tabular-nums font-extrabold text-sm flex items-center justify-center shrink-0 text-white ${
                         isDelivered
@@ -652,7 +683,6 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
                         </p>
                       )}
 
-                      {/* Distance & Duration Metadata */}
                       {leg && (
                         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 mt-2.5 pt-2 border-t border-slate-100">
                           <span>
@@ -680,7 +710,6 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Card Actions */}
                   <div
                     className="flex flex-wrap items-center gap-2 mr-auto"
                     onClick={(e) => e.stopPropagation()}

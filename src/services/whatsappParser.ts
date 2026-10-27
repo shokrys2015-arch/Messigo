@@ -122,7 +122,6 @@ export function parseMapUrl(rawUrl: string): ParsedUrlResult {
       }
     }
   } catch {
-    // Fallback regex if URL constructor fails
     const fallbackQuery = normalizedUrl.match(/[?&](?:query|q)=([^&\s]+)/i);
     if (fallbackQuery && fallbackQuery[1]) {
       return {
@@ -140,10 +139,6 @@ export function parseMapUrl(rawUrl: string): ParsedUrlResult {
 
 /**
  * Splits bulk pasted WhatsApp messages into individual order blocks.
- * Handles:
- * - Explicit separator lines (---, ===, ***, ___)
- * - WhatsApp chat headers ([10/27/26, 9:15 AM] Sender: ... or 27/10/2026، 9:15 ص - Sender: ...)
- * - Multiple customer blocks separated by blank lines when each block contains its own phone number or customer header.
  */
 export function splitBulkWhatsappMessages(rawInput: string): { text: string; uncertainSplit: boolean }[] {
   const cleaned = rawInput.replace(/\r\n/g, '\n').trim();
@@ -160,7 +155,6 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
   }
 
   // 2. Check for WhatsApp timestamp headers:
-  // e.g. [27/10/2026, 09:14:24] Name: or 27/10/2026, 09:14 - Name:
   const waHeaderRegex = /(?:^|\n)(?=\[?\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[،,\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APMapmصم])?\]?\s*(?:-\s*)?[^:\n]{1,40}:\s*)/g;
   const waBlocks = cleaned
     .split(waHeaderRegex)
@@ -171,8 +165,6 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
   }
 
   // 3. Split by paragraphs / blank lines, then group paragraphs that belong to the same single order
-  // (for example, when "الموقع: ..." and the Google Maps URL are separated by blank lines after the order body,
-  // just like in the prompt's test example!)
   const paragraphs = cleaned
     .split(/\n\s*\n+/)
     .map((p) => p.trim())
@@ -183,9 +175,14 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
   }
 
   const hasCustomerStartSignal = (para: string): boolean => {
-    const norm = normalizeDigits(para);
-    const hasPhone = /(?:^|\D)(?:\+?20|0)?1[0125]\d{8}(?:\D|$)|(?:^|\D)(?:\+?966|0)?5\d{8}(?:\D|$)|(?:ت|تليفون|هاتف|موبايل|جوال|رقم)\s*[:：-]?\s*\d{8,14}/i.test(norm);
-    const startsWithCustomerHonorific = /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|أ\/|ا\/|مدام|الحاج|كابتن|دكتور|د\/|م\/|مهندس|العميل|اسم العميل|الاسم)\s+/m.test(para);
+    const norm = normalizeDigits(para).replace(/[\s-]/g, '');
+    const hasPhone =
+      /(?:\+?20|0020|0)?1[0125]\d{8}|(?:\+?966|00966|0)?5\d{8}/.test(norm) ||
+      /(?:ت|تليفون|هاتف|موبايل|جوال|رقم)\s*[:：-]?\s*\+?\d{8,14}/i.test(normalizeDigits(para));
+    const startsWithCustomerHonorific =
+      /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|أ\/|ا\/|مدام|الحاج|كابتن|دكتور|د\/|م\/|مهندس|العميل|اسم العميل|الاسم)\s+/m.test(
+        para
+      );
     return hasPhone || startsWithCustomerHonorific;
   };
 
@@ -195,7 +192,7 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
     return lines.every(
       (line) =>
         /^https?:\/\/\S+$/i.test(line) ||
-        /^(?:الموقع|لوكيشن|اللوكيشن|رابط الموقع|خريطة|العنوان على الخريطة)\s*[:：-]/i.test(line) ||
+        /^(?:الموقع|لوكيشن|اللوكيشن|رابط الموقع|خريطة|العنوان على الخريطة|العنوان)\s*[:：-]?/i.test(line) ||
         /^(?:احداثيات|إحداثيات|خط العرض)/i.test(line)
     );
   };
@@ -207,68 +204,31 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
       continue;
     }
 
-    if (isOnlyLocationContinuation(para) || (!hasCustomerStartSignal(para) && !hasCustomerStartSignal(mergedBlocks[mergedBlocks.length - 1].text))) {
+    if (
+      isOnlyLocationContinuation(para) ||
+      (!hasCustomerStartSignal(para) && !hasCustomerStartSignal(mergedBlocks[mergedBlocks.length - 1].text))
+    ) {
       mergedBlocks[mergedBlocks.length - 1].text += '\n\n' + para;
     } else if (hasCustomerStartSignal(para)) {
       mergedBlocks.push({ text: para, uncertainSplit: false });
     } else {
-      // Attached to previous block if it doesn't look like a new customer
       mergedBlocks[mergedBlocks.length - 1].text += '\n\n' + para;
     }
   }
 
-  // Final check: does any single block contain TWO distinct phone numbers on different non-adjacent lines
-  // that look like two separate customers pasted without blank lines?
-  const finalBlocks: { text: string; uncertainSplit: boolean }[] = [];
-  for (const block of mergedBlocks) {
-    const lines = block.text.split('\n');
-    const customerStartIndices: number[] = [];
-    lines.forEach((line, idx) => {
-      if (
-        /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|العميل|اسم العميل|الاسم|أوردر رقم|طلب رقم)\s*[:：-]?\s*\S+/i.test(
-          line.trim()
-        ) &&
-        idx > 0
-      ) {
-        // Check if previous lines already had a phone number
-        const prevText = normalizeDigits(lines.slice(0, idx).join('\n'));
-        if (/(?:\+?20|0)?1[0125]\d{8}|(?:\+?966|0)?5\d{8}/.test(prevText)) {
-          customerStartIndices.push(idx);
-        }
-      }
-    });
-
-    if (customerStartIndices.length > 0) {
-      let start = 0;
-      for (const splitIdx of customerStartIndices) {
-        finalBlocks.push({
-          text: lines.slice(start, splitIdx).join('\n').trim(),
-          uncertainSplit: false,
-        });
-        start = splitIdx;
-      }
-      finalBlocks.push({
-        text: lines.slice(start).join('\n').trim(),
-        uncertainSplit: false,
-      });
-    } else {
-      finalBlocks.push(block);
-    }
-  }
-
-  return finalBlocks;
+  return mergedBlocks;
 }
 
 /**
  * Extracts structured order fields from a single WhatsApp order message block.
- * Never confuses phone numbers, prices, and geographic coordinates.
+ * Handles multi-line "العنوان:", compound/villa addresses, international phone formats with spaces (+20 104 ...),
+ * and combines primary district/street addresses with secondary floor/apartment lines.
  */
 export function parseSingleOrderMessage(
   rawBlock: string,
   uncertainSplit = false
 ): DeliveryOrder {
   const id = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  // Strip leading WhatsApp chat timestamp prefix if present
   const cleanedBlock = rawBlock
     .replace(
       /^\[?\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[،,\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APMapmصم])?\]?\s*(?:-\s*)?[^:\n]{1,40}:\s*/,
@@ -283,7 +243,8 @@ export function parseSingleOrderMessage(
 
   let customerName = '';
   let phone = '';
-  let address = '';
+  const mainAddressParts: string[] = [];
+  const subAddressParts: string[] = [];
   let locationText = '';
   let mapUrl = '';
   let searchQueryFromUrl: string | undefined;
@@ -294,8 +255,17 @@ export function parseSingleOrderMessage(
 
   const consumedLineIndices = new Set<number>();
 
+  // 0. Ignore polite closing lines like "شكراً جداً 🌸"
+  rawLines.forEach((line, idx) => {
+    const stripped = line.replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g, '').trim();
+    if (/^(?:شكرا|شكراً|شكرا جزيلا|شكراً جزيلاً|شكرا جدا|شكراً جداً|بالتوفيق|تسلم|تحياتي)$/i.test(stripped)) {
+      consumedLineIndices.add(idx);
+    }
+  });
+
   // 1. Extract URLs first (especially Google Maps links)
   rawLines.forEach((line, idx) => {
+    if (consumedLineIndices.has(idx)) return;
     const urlMatch = line.match(/(https?:\/\/[^\s]+)/i);
     if (urlMatch && !mapUrl) {
       const extractedUrl = urlMatch[1];
@@ -310,14 +280,18 @@ export function parseSingleOrderMessage(
       if (parsedUrl.searchQuery) {
         searchQueryFromUrl = parsedUrl.searchQuery;
       }
-      // If the line was ONLY the URL, mark line as consumed
-      if (line.replace(extractedUrl, '').replace(/^(?:الموقع|لوكيشن|اللوكيشن|رابط الموقع|خريطة)\s*[:：-]?\s*/i, '').trim() === '') {
+      if (
+        line
+          .replace(extractedUrl, '')
+          .replace(/^(?:الموقع|لوكيشن|اللوكيشن|رابط الموقع|خريطة)\s*[:：-]?\s*/i, '')
+          .trim() === ''
+      ) {
         consumedLineIndices.add(idx);
       }
     }
   });
 
-  // 2. Check for inline explicit coordinates (e.g., "الإحداثيات: 30.0712, 31.3521" or plain "30.071234, 31.352145")
+  // 2. Check for inline explicit coordinates
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx)) return;
     const normLine = normalizeDigits(line);
@@ -341,39 +315,48 @@ export function parseSingleOrderMessage(
     }
   });
 
-  // 3. Extract Phone Number (strictly distinguishing from prices and coordinates)
+  // 3. Extract Phone Number (supports spaces like "+20 104 4544066" or "رقم الموبايل: 012...")
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx) || phone) return;
     const normLine = normalizeDigits(line);
 
-    // Avoid matching inside URLs or price lines
     if (/^https?:\/\//i.test(normLine)) return;
     if (/(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|المبلغ|حساب)\s*[:：-]/i.test(normLine)) return;
 
-    // Explicit phone prefix: ت: / تليفون: / موبايل: / هاتف: / جوال: / رقم:
+    // Labeled phone line (even if "رقم الموبايل:" is followed by +20 104 4544066)
     const labeledPhoneMatch = normLine.match(
-      /^(?:ت|تليفون|التليفون|هاتف|الهاتف|موبايل|الموبايل|جوال|الجوال|رقم|الرقم|تواصل|واتساب)\s*[:：-]?\s*(\+?\d[\d\s-]{8,15}\d)$/i
+      /(?:^|\b)(?:ت|تليفون|التليفون|هاتف|الهاتف|موبايل|الموبايل|رقم الموبايل|رقم التليفون|رقم الهاتف|جوال|الجوال|رقم التواصل|تواصل|واتساب)\s*[:：-]?\s*(\+?[\d\s-]{9,18}\d)/i
     );
     if (labeledPhoneMatch) {
-      phone = labeledPhoneMatch[1].replace(/[\s-]/g, '');
-      consumedLineIndices.add(idx);
-      return;
-    }
+      let cleanedPhone = labeledPhoneMatch[1].replace(/[\s-]/g, '');
+      if (cleanedPhone.startsWith('+201')) cleanedPhone = '0' + cleanedPhone.slice(3);
+      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12) cleanedPhone = '0' + cleanedPhone.slice(2);
+      phone = cleanedPhone;
 
-    // Egyptian mobile pattern (010, 011, 012, 015) or Saudi/Gulf mobile pattern
-    const standalonePhoneMatch = normLine.match(
-      /(?:^|(?:ت|تليفون|هاتف|موبايل|جوال|رقم)\s*[:：-]?\s*)((?:\+?20|0020|0)?1[0125]\d{8}|(?:\+?966|00966|0)?5\d{8}|0[23]\d{7,8})\b/
-    );
-    if (standalonePhoneMatch) {
-      const extractedPhone = standalonePhoneMatch[1].replace(/[\s-]/g, '');
-      phone = extractedPhone.startsWith('1') && extractedPhone.length === 10 ? `0${extractedPhone}` : extractedPhone;
       const remainder = normLine
-        .replace(standalonePhoneMatch[0], '')
-        .replace(/^[:：,\s-]+|[:：,\s-]+$/g, '')
+        .replace(labeledPhoneMatch[0], '')
+        .replace(/^[:：,،\s-]+|[:：,،\s-]+$/g, '')
         .trim();
       if (!remainder) {
         consumedLineIndices.add(idx);
+      } else {
+        rawLines[idx] = remainder;
       }
+      return;
+    }
+
+    // Standalone phone line with optional spaces (e.g. "+20 104 4544066" or "0122 212 3948")
+    const compactNorm = normLine.replace(/[\s-]/g, '');
+    const phoneMatchCompact = compactNorm.match(
+      /^((?:\+?20|0020|0)?1[01245]\d{8}|(?:\+?966|00966|0)?5\d{8}|0[23]\d{7,8})$/
+    );
+    if (phoneMatchCompact) {
+      let cleanedPhone = phoneMatchCompact[1];
+      if (cleanedPhone.startsWith('+201')) cleanedPhone = '0' + cleanedPhone.slice(3);
+      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12) cleanedPhone = '0' + cleanedPhone.slice(2);
+      else if (cleanedPhone.startsWith('1') && cleanedPhone.length === 10) cleanedPhone = '0' + cleanedPhone;
+      phone = cleanedPhone;
+      consumedLineIndices.add(idx);
     }
   });
 
@@ -382,7 +365,6 @@ export function parseSingleOrderMessage(
     if (consumedLineIndices.has(idx)) return;
     const normLine = normalizeDigits(line);
 
-    // Labeled total line: "الإجمالي: ١٥٠٠ جنيه" or "السعر: 500 ج"
     const labeledPriceMatch = line.match(
       /^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|سعر الطلب|المبلغ|المطلوب|الحساب|التكلفة|تحصيل)\s*[:：-]?\s*(.+)$/i
     );
@@ -392,102 +374,143 @@ export function parseSingleOrderMessage(
       return;
     }
 
-    // Line that is purely a price with currency (e.g. "1500 جنيه")
-    if (!totalPrice && /^\s*[٠-٩0-9.,]+\s*(?:جنيه|ج\.م|جم|جنية|ريال|ر\.س|درهم|دولار|EGP|SAR)\s*$/i.test(normLine)) {
+    if (
+      !totalPrice &&
+      /^\s*[٠-٩0-9.,]+\s*(?:جنيه|ج\.م|جم|جنية|ريال|ر\.س|درهم|دولار|EGP|SAR)\s*$/i.test(normLine)
+    ) {
       totalPrice = line.trim();
       consumedLineIndices.add(idx);
     }
   });
 
-  // 5. Extract Explicit Location Line ("الموقع: ...") and Explicit Address Line ("العنوان: ...")
-  rawLines.forEach((line, idx) => {
-    if (consumedLineIndices.has(idx)) return;
+  // 5. Extract Explicit Location ("الموقع:") & Explicit Address ("العنوان:"), including when the value is on the NEXT line!
+  for (let idx = 0; idx < rawLines.length; idx++) {
+    if (consumedLineIndices.has(idx)) continue;
+    const line = rawLines[idx];
+
+    // Check if line is ONLY "العنوان:" or "عنوان التوصيل:" and the actual address is on the next line
+    if (/^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل)\s*[:：-]?\s*$/i.test(line)) {
+      consumedLineIndices.add(idx);
+      if (idx + 1 < rawLines.length && !consumedLineIndices.has(idx + 1)) {
+        mainAddressParts.push(rawLines[idx + 1].trim());
+        consumedLineIndices.add(idx + 1);
+      }
+      continue;
+    }
+
+    // Check if line is ONLY "الموقع:" and the actual location is on the next line
+    if (/^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：-]?\s*$/i.test(line)) {
+      consumedLineIndices.add(idx);
+      if (idx + 1 < rawLines.length && !consumedLineIndices.has(idx + 1)) {
+        const nextVal = rawLines[idx + 1].replace(/https?:\/\/\S+/gi, '').trim();
+        if (nextVal) locationText = nextVal;
+        consumedLineIndices.add(idx + 1);
+      }
+      continue;
+    }
 
     const locationLabelMatch = line.match(
       /^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：-]\s*(.+)$/i
     );
     if (locationLabelMatch) {
       const locVal = locationLabelMatch[1].replace(/https?:\/\/\S+/gi, '').trim();
-      if (locVal) {
-        locationText = locVal;
-      }
+      if (locVal) locationText = locVal;
       consumedLineIndices.add(idx);
-      return;
+      continue;
     }
 
     const addressLabelMatch = line.match(
       /^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل|المنطقة)\s*[:：-]\s*(.+)$/i
     );
     if (addressLabelMatch) {
-      address = addressLabelMatch[1].trim();
+      mainAddressParts.push(addressLabelMatch[1].trim());
       consumedLineIndices.add(idx);
     }
-  });
+  }
 
   // 6. Extract Customer Name
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx) || customerName) return;
 
-    // Labeled customer name: "العميل: ..." or "الاسم: ..."
     const labeledNameMatch = line.match(
       /^(?:اسم العميل|العميل|الاسم|اسم المستلم|المستلم)\s*[:：-]\s*(.+)$/i
     );
     if (labeledNameMatch) {
       customerName = labeledNameMatch[1]
         .replace(/^(?:الأستاذ|الاستاذ|أستاذ|استاذ|أ\/|ا\/)\s+/i, '')
+        .replace(/[،,]+$/g, '')
         .trim();
       consumedLineIndices.add(idx);
       return;
     }
 
-    // Honorific prefix: "الأستاذ محمود الخطيب"
     const honorificMatch = line.match(
       /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|الأستاذة|الاستاذة|مدام|الحاج|الحاجة|كابتن|دكتور|دكتورة|د\/|المهندس|مهندس|م\/)\s+(.+)$/i
     );
     if (honorificMatch) {
-      customerName = honorificMatch[1].trim();
+      customerName = honorificMatch[1].replace(/[،,]+$/g, '').trim();
       consumedLineIndices.add(idx);
     }
   });
 
-  // If customerName wasn't explicitly labeled or prefixed, check if the first unconsumed line is a name
+  // Fallback customer name from first unconsumed line if it looks like a person's name
   if (!customerName) {
     const firstUnconsumedIdx = rawLines.findIndex((_, i) => !consumedLineIndices.has(i));
     if (firstUnconsumedIdx !== -1) {
       const candidate = rawLines[firstUnconsumedIdx];
       const normCandidate = normalizeDigits(candidate);
       const looksLikeAddressOrOrder =
-        /(?:شارع|ش |ميدان|عمارة|برج|الدور|شقة|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|حي |طلب|أوردر|اوردر|عدد|قطعة|تيشيرت|كرتونة|علبة)/i.test(
+        /(?:شارع|ش |ميدان|عمارة|برج|الدور|شقة|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|حي |فيلا|كمبوند|بالم هيلز|المرحلة|بوابة|بوابه|تجمع|التجمع|قطامية|قطاميه|طلب|أوردر|اوردر|عدد|قطعة|تيشيرت|كرتونة|علبة|سابليه|فرسكا|افريسكا|دليفري)/i.test(
           candidate
         ) || /\d{3,}/.test(normCandidate);
 
       if (!looksLikeAddressOrOrder && candidate.split(/\s+/).length <= 5) {
-        customerName = candidate.trim();
+        customerName = candidate.replace(/[،,]+$/g, '').trim();
         consumedLineIndices.add(firstUnconsumedIdx);
       }
     }
   }
 
-  // 7. Classify remaining unconsumed lines into Address vs Order Details
-  const addressKeywords =
-    /(?:شارع|ش\.|ميدان|عمارة|برج|الدور|شقة|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|حي|كمبوند|كومبوند|كورنيش|طريق|محطة|مسجد|كنيسة|مستشفى|مدرسة|جامعة|القاهرة|الجيزة|الإسكندرية|الاسكندرية|مدينة نصر|المعادي|التجمع|الشيخ زايد|أكتوبر|اكتوبر|مصر الجديدة|المهندسين|الدقي|حلوان|شبرا|فيصل|الهرم)/i;
-  const orderKeywords =
-    /(?:طلب|أوردر|اوردر|رقم|تيشيرت|تيشيرتات|بنطلون|قميص|حذاء|كوتشي|شنطة|علبة|كرتونة|قطعة|قطع|كيلو|كجم|جم|عبوة|باكيت|وجبة|بوكس|طقم|عدد|مقاس|لون)/i;
+  // 7. Classify remaining unconsumed lines into Primary Address, Sub-Address (Floor/Apt/Gate), vs Order Details
+  // Primary Geographic Address Keywords (Districts, Compounds, Streets, Landmarks)
+  const primaryAddressRegex =
+    /(?:شارع|ش\.|ميدان|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|مدينه|حي|كمبوند|كومبوند|بالم هيلز|ماونتن فيو|هايد بارك|ميفيدا|مدينتي|الرحاب|الشروق|العبور|كورنيش|طريق|محطة|مسجد|كنيسة|مستشفى|مدرسة|جامعة|القاهرة|القاهره|الجيزة|الجيزه|الإسكندرية|الاسكندرية|مدينة نصر|المعادي|التجمع|القاهرة الجديدة|قطامية|قطاميه|غرب الجولف|النرجس|الياسمين|البنفسج|اللوتس|الأندلس|الشيخ زايد|أكتوبر|اكتوبر|مصر الجديدة|النزهة|المهندسين|الدقي|حلوان|شبرا|فيصل|الهرم|الزمالك|المقطم|فيلا|فيلات|المرحلة|مرحلة)/i;
+
+  // Secondary Building/Unit Keywords (Floor, Apartment, Gate, Building number without district)
+  const subAddressRegex =
+    /^(?:الدور|دور|شقة|شقه|عمارة|عماره|برج|عقار|بوابة|بوابه|الدخول من بوابة|الدخول من بوابه)(?:\s|$|[،,:])/i;
+
+  // Order Item / Product / Delivery Fee Keywords
+  const productOrPriceLineRegex =
+    /(?:طلب|أوردر|اوردر|تيشيرت|تيشيرتات|بنطلون|قميص|حذاء|كوتشي|شنطة|حقيبة|علبة|علبه|كرتونة|قطعة|قطع|كيلو|كجم|عبوة|باكيت|وجبة|بوكس|طقم|مقاس|سابليه|فرسكا|افريسكا|شوكولاتة|شيكولاتة|عسل|مربى|عجمية|صفيح|دليفري|توصيل\s*[٠-٩0-9]+)/i;
 
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx)) return;
     const cleanLine = line.replace(/https?:\/\/\S+/gi, '').trim();
     if (!cleanLine) return;
 
-    // Ignore generic order number header lines like "طلب تجريبي رقم ١" if followed by actual item lines,
-    // or include them if no other details exist
     if (/^(?:طلب تجريبي رقم|طلب رقم|أوردر رقم|اوردر رقم)\s*[٠-٩0-9]+$/i.test(cleanLine)) {
       consumedLineIndices.add(idx);
       return;
     }
 
-    if (!address && addressKeywords.test(cleanLine) && !orderKeywords.test(cleanLine)) {
-      address = cleanLine;
+    // Check if it's a product/item/delivery-fee line
+    if (productOrPriceLineRegex.test(cleanLine) && !primaryAddressRegex.test(cleanLine)) {
+      detailLines.push(cleanLine);
+      consumedLineIndices.add(idx);
+      return;
+    }
+
+    // Check if it's a primary geographic address line (e.g. "بالم هيلز المرحلة ٥ ، فيلا ٣٣١" or "١٦٦ غرب الجولف ، التجمع الثالث")
+    if (primaryAddressRegex.test(cleanLine)) {
+      mainAddressParts.push(cleanLine);
+      consumedLineIndices.add(idx);
+      return;
+    }
+
+    // Check if it's a secondary floor/apt/gate line (e.g. "الدور الأول، شقة ٤" or "الدخول من بوابه ٤")
+    if (subAddressRegex.test(cleanLine)) {
+      subAddressParts.push(cleanLine);
       consumedLineIndices.add(idx);
       return;
     }
@@ -496,10 +519,14 @@ export function parseSingleOrderMessage(
     consumedLineIndices.add(idx);
   });
 
-  // If address is still empty but locationText was extracted, use locationText as fallback display address
-  if (!address && locationText) {
-    address = locationText;
-  }
+  // Assemble full address: Primary Geographic Address first, followed by Sub-Address (Floor/Apt)
+  const fullAddress = [...mainAddressParts, ...subAddressParts].join(' — ').trim();
+  const primaryGeographicAddress = mainAddressParts.join('، ').trim();
+
+  const finalAddress = fullAddress || locationText || '';
+  // For map geocoding (`locationText`), prefer explicit `locationText` ("الموقع: ..."), then `primaryGeographicAddress` (without "الدور الأول شقة ٤"), then `finalAddress`
+  const finalLocationLookupText =
+    locationText || searchQueryFromUrl || primaryGeographicAddress || finalAddress;
 
   // Determine initial LocationStatus
   let locationStatus: LocationStatus = 'الموقع غير موجود';
@@ -513,8 +540,7 @@ export function parseSingleOrderMessage(
     if (uncertainSplit) {
       reviewNote = 'تم فصل هذا الأوردر تلقائيًا؛ يرجى مراجعة البيانات للتأكد من عدم تداخلها.';
     }
-  } else if (searchQueryFromUrl || locationText || address || mapUrl) {
-    // Has a place search link or textual location/address that will be looked up via geocoding service
+  } else if (searchQueryFromUrl || finalLocationLookupText || mapUrl) {
     locationStatus = 'يحتاج إلى مراجعة';
     reviewNote = searchQueryFromUrl
       ? 'الرابط عبارة عن بحث عن مكان ولا يحتوي على إحداثيات رقمية مباشرة؛ يرجى مراجعة الموقع وتأكيده على الخريطة.'
@@ -528,8 +554,8 @@ export function parseSingleOrderMessage(
     id,
     customerName: customerName || '',
     phone: phone || '',
-    address: address || '',
-    locationText: locationText || searchQueryFromUrl || address || '',
+    address: finalAddress,
+    locationText: finalLocationLookupText,
     mapUrl: mapUrl || '',
     searchQueryFromUrl,
     coordinates,
@@ -546,7 +572,7 @@ export function parseSingleOrderMessage(
 }
 
 /**
- * Sample test messages including the exact required test message from Section 4 of the specification.
+ * Sample test messages (Strictly using the football players examples).
  */
 export const EXACT_PROMPT_SAMPLE_MESSAGE = `الأستاذ محمود الخطيب  
 ت: 010000000000  
