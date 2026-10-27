@@ -5,6 +5,9 @@ export interface GeocodingSearchResult {
   lat: number;
   lng: number;
   displayName: string;
+  source?: 'google_maps_grounding' | 'gazetteer' | 'map_service';
+  groundingUri?: string;
+  groundingTitle?: string;
 }
 
 /**
@@ -457,10 +460,64 @@ async function fetchNominatimResultsEgypt(query: string): Promise<GeocodingSearc
 }
 
 /**
+ * Queries the server-side Google Maps Grounding endpoint (/api/geocode-egypt).
+ * Gracefully returns [] if running in a static-only environment (e.g. Cloudflare Pages without backend).
+ */
+async function fetchGoogleMapsGroundingEgypt(
+  query: string
+): Promise<GeocodingSearchResult[]> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8500);
+  try {
+    const res = await fetch('/api/geocode-egypt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) return [];
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return [];
+    const data = await res.json();
+    if (!Array.isArray(data?.results)) return [];
+
+    return data.results
+      .map(
+        (item: {
+          lat?: number;
+          lng?: number;
+          displayName?: string;
+          groundingUri?: string;
+          groundingTitle?: string;
+        }): GeocodingSearchResult | null => {
+          const lat = Number(item.lat);
+          const lng = Number(item.lng);
+          if (!isValidCoordinates(lat, lng)) return null;
+          return {
+            lat,
+            lng,
+            displayName: item.displayName || query,
+            source: 'google_maps_grounding',
+            groundingUri: item.groundingUri,
+            groundingTitle: item.groundingTitle,
+          };
+        }
+      )
+      .filter(
+        (item: GeocodingSearchResult | null): item is GeocodingSearchResult => item !== null
+      );
+  } catch {
+    clearTimeout(timeoutId);
+    return [];
+  }
+}
+
+/**
  * Egypt-dedicated multi-provider place search:
  * 1. Parses pasted Google Maps links or direct coordinates.
  * 2. Matches against the high-precision Egyptian Landmarks & Compounds Gazetteer first.
- * 3. Queries Photon (OSM), ArcGIS Egypt, and Nominatim Egypt.
+ * 3. Queries Google Maps Grounding (/api/geocode-egypt) alongside Photon (OSM), ArcGIS Egypt, and Nominatim Egypt.
  */
 export async function searchPlaceNominatim(query: string): Promise<GeocodingSearchResult[]> {
   const cleanQuery = query.trim();
@@ -480,6 +537,10 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
     }
     if (parsed.searchQuery) {
       return searchPlaceNominatim(parsed.searchQuery);
+    }
+    const resolvedShortLink = await fetchGoogleMapsGroundingEgypt(cleanQuery);
+    if (resolvedShortLink.length > 0) {
+      return resolvedShortLink;
     }
   }
 
@@ -503,19 +564,29 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
   }
 
   // 3. Match against curated Egyptian Compounds & Landmarks Gazetteer first!
-  const gazetteerMatches = matchEgyptGazetteer(cleanQuery);
+  const gazetteerMatches = matchEgyptGazetteer(cleanQuery).map((g) => ({
+    ...g,
+    source: 'gazetteer' as const,
+  }));
 
-  // 4. Query external Egypt-restricted geocoders
+  // 4. Query Google Maps Grounding + external Egypt-restricted geocoders in parallel
   const variants = buildArabicSearchVariants(cleanQuery);
   const primaryVariant = variants[0] || cleanQuery;
 
-  const [photonRes, arcgisRes, nominatimRes] = await Promise.all([
+  const [mapsGroundingRes, photonRes, arcgisRes, nominatimRes] = await Promise.all([
+    fetchGoogleMapsGroundingEgypt(cleanQuery),
     fetchPhotonResultsEgypt(primaryVariant),
     fetchArcGisResultsEgypt(primaryVariant),
     fetchNominatimResultsEgypt(primaryVariant),
   ]);
 
-  const combined = [...gazetteerMatches, ...photonRes, ...arcgisRes, ...nominatimRes];
+  const combined: GeocodingSearchResult[] = [
+    ...gazetteerMatches,
+    ...mapsGroundingRes,
+    ...photonRes,
+    ...arcgisRes,
+    ...nominatimRes,
+  ];
 
   if (combined.length < 3 && variants.length > 1) {
     for (let i = 1; i < variants.length; i++) {
@@ -544,6 +615,9 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
         lat: Number(candidate.lat.toFixed(6)),
         lng: Number(candidate.lng.toFixed(6)),
         displayName: candidate.displayName,
+        source: candidate.source,
+        groundingUri: candidate.groundingUri,
+        groundingTitle: candidate.groundingTitle,
       });
     }
   }
@@ -692,7 +766,7 @@ export async function resolvePendingOrderLocations(
       ({ o }) =>
         !o.coordinates &&
         o.locationStatus !== 'الإحداثيات غير صحيحة' &&
-        Boolean(o.searchQueryFromUrl || o.locationText || o.address)
+        Boolean(o.mapUrl || o.searchQueryFromUrl || o.locationText || o.address)
     );
 
   for (let i = 0; i < indicesToResolve.length; i++) {
@@ -701,7 +775,7 @@ export async function resolvePendingOrderLocations(
       onProgress(i + 1, indicesToResolve.length);
     }
 
-    const queryToTry = o.searchQueryFromUrl || o.locationText || o.address;
+    const queryToTry = o.searchQueryFromUrl || o.locationText || o.address || o.mapUrl;
     if (!queryToTry) continue;
 
     const matches = await searchPlaceNominatim(queryToTry);

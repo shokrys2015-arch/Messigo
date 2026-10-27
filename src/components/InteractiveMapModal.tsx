@@ -321,26 +321,13 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
               <Compass className="w-4 h-4 text-sky-600" />
               <span>موقعي الحالي</span>
             </button>
-            {searchQuery.trim() && (
-              <a
-                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                  /مصر/i.test(searchQuery) ? searchQuery.trim() : `${searchQuery.trim()}، مصر`
-                )}`}
-                target="_blank"
-                rel="noreferrer"
-                className="min-h-[44px] px-3.5 py-2 rounded-xl border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                title="افتح هذا العنوان في خرائط جوجل ثم انسخ الرابط والصقه هنا"
-              >
-                <span>فتح البحث في خرائط جوجل</span>
-              </a>
-            )}
           </form>
 
           {/* Search Results List */}
           {searchResults.length > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 max-h-36 overflow-y-auto space-y-1">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 max-h-40 overflow-y-auto space-y-1">
               <p className="text-xs font-semibold text-slate-600 px-2">
-                نتائج البحث المتاحة (اضغط لاختيار النتيجة المناسبة):
+                نتائج البحث داخل مصر (اضغط لاختيار النتيجة المناسبة):
               </p>
               {searchResults.map((res, idx) => {
                 const isSelectedResult =
@@ -349,26 +336,44 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
                   Math.abs(selectedCoords.lng - res.lng) < 0.0001;
 
                 return (
-                  <button
+                  <div
                     key={`${res.lat}-${res.lng}-${idx}`}
-                    type="button"
-                    onClick={() =>
-                      moveMapToCoordinates({ lat: res.lat, lng: res.lng }, res.displayName)
-                    }
                     className={`w-full text-right px-2.5 py-2 text-xs rounded-lg transition-colors flex items-center justify-between gap-2 ${
                       isSelectedResult
                         ? 'bg-sky-100 text-sky-950 font-bold'
                         : 'text-slate-700 hover:bg-sky-50 hover:text-sky-900'
                     }`}
                   >
-                    <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        moveMapToCoordinates({ lat: res.lat, lng: res.lng }, res.displayName)
+                      }
+                      className="flex items-center gap-2 min-w-0 flex-1 text-right"
+                    >
                       <MapPin className="w-3.5 h-3.5 text-sky-600 shrink-0" />
                       <span className="truncate">{res.displayName}</span>
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {res.groundingUri && (
+                        <a
+                          href={res.groundingUri}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[11px] text-sky-700 hover:underline font-normal"
+                          title={res.groundingTitle || 'المصدر على خرائط جوجل'}
+                        >
+                          المصدر: خرائط جوجل
+                        </a>
+                      )}
+                      <span
+                        className="font-mono tabular-nums text-[11px] text-slate-500"
+                        dir="ltr"
+                      >
+                        {res.lat.toFixed(4)}, {res.lng.toFixed(4)}
+                      </span>
                     </div>
-                    <span className="font-mono tabular-nums text-[11px] text-slate-500 shrink-0" dir="ltr">
-                      {res.lat.toFixed(4)}, {res.lng.toFixed(4)}
-                    </span>
-                  </button>
+                  </div>
                 );
               })}
             </div>
