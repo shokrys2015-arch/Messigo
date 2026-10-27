@@ -1,8 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { Check, Compass, MapPin, Search, X } from 'lucide-react';
+import { Check, Compass, Loader2, MapPin, Search, X } from 'lucide-react';
 import { Coordinates } from '../types/messigo';
-import { GeocodingSearchResult, searchPlaceNominatim } from '../services/geocodingService';
+import {
+  GeocodingSearchResult,
+  reverseGeocodeCoordinates,
+  searchPlaceNominatim,
+} from '../services/geocodingService';
 import { isValidCoordinates, normalizeDigits } from '../services/whatsappParser';
 
 interface InteractiveMapModalProps {
@@ -36,6 +40,7 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>(initialSearchQuery);
   const [searchResults, setSearchResults] = useState<GeocodingSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   const [manualLat, setManualLat] = useState<string>(
     initialCoordinates ? String(initialCoordinates.lat) : ''
   );
@@ -44,38 +49,94 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
   );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (isOpen) {
-      setSelectedCoords(initialCoordinates);
-      setSelectedLabel(initialSearchQuery || '');
-      setSearchQuery(initialSearchQuery || '');
-      setManualLat(initialCoordinates ? String(initialCoordinates.lat) : '');
-      setManualLng(initialCoordinates ? String(initialCoordinates.lng) : '');
-      setSearchResults([]);
-      setErrorMsg(null);
-    }
-  }, [isOpen, initialCoordinates, initialSearchQuery]);
-
   const createPinIcon = () =>
     L.divIcon({
       className: 'messigo-pin',
-      html: `<div style="width:36px;height:36px;border-radius:9999px;background:#0284c7;border:3px solid #ffffff;box-shadow:0 6px 16px rgba(2,132,199,0.45);display:flex;align-items:center;justify-content:center;color:#ffffff;font-weight:700;font-size:16px;">📍</div>`,
-      iconSize: [36, 36],
-      iconAnchor: [18, 18],
+      html: `<div style="width:38px;height:38px;border-radius:9999px;background:#0284c7;border:3px solid #ffffff;box-shadow:0 6px 16px rgba(2,132,199,0.45);display:flex;align-items:center;justify-content:center;color:#ffffff;font-weight:700;font-size:17px;">📍</div>`,
+      iconSize: [38, 38],
+      iconAnchor: [19, 19],
     });
+
+  // Helper to update coordinates from map click or marker drag + reverse geocode
+  const applyPickedCoordinatesFromMap = async (
+    coords: Coordinates,
+    explicitLabel?: string
+  ) => {
+    const rounded: Coordinates = {
+      lat: Number(coords.lat.toFixed(6)),
+      lng: Number(coords.lng.toFixed(6)),
+    };
+    setSelectedCoords(rounded);
+    setManualLat(String(rounded.lat));
+    setManualLng(String(rounded.lng));
+    setErrorMsg(null);
+
+    if (explicitLabel) {
+      setSelectedLabel(explicitLabel);
+      return;
+    }
+
+    setIsReverseGeocoding(true);
+    const revName = await reverseGeocodeCoordinates(rounded);
+    setIsReverseGeocoding(false);
+    if (revName) {
+      setSelectedLabel(revName);
+    } else {
+      setSelectedLabel(`موقع محدد على الخريطة (${rounded.lat.toFixed(4)}, ${rounded.lng.toFixed(4)})`);
+    }
+  };
+
+  // Place or move marker on the map and attach drag listener
+  const placeOrUpdateMarkerOnMap = (
+    map: L.Map,
+    coords: Coordinates,
+    flyTo = false,
+    zoomLevel = 16
+  ) => {
+    if (flyTo) {
+      map.setView([coords.lat, coords.lng], zoomLevel, { animate: true });
+    }
+    if (markerRef.current) {
+      markerRef.current.setLatLng([coords.lat, coords.lng]);
+    } else {
+      const m = L.marker([coords.lat, coords.lng], {
+        icon: createPinIcon(),
+        draggable: true,
+      }).addTo(map);
+
+      m.on('dragend', () => {
+        const pos = m.getLatLng();
+        if (pos) {
+          applyPickedCoordinatesFromMap({ lat: pos.lat, lng: pos.lng });
+        }
+      });
+
+      markerRef.current = m;
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedCoords(initialCoordinates);
+    setSelectedLabel(initialSearchQuery || '');
+    setSearchQuery(initialSearchQuery || '');
+    setManualLat(initialCoordinates ? String(initialCoordinates.lat) : '');
+    setManualLng(initialCoordinates ? String(initialCoordinates.lng) : '');
+    setSearchResults([]);
+    setErrorMsg(null);
+  }, [isOpen, initialCoordinates, initialSearchQuery]);
 
   useEffect(() => {
     if (!isOpen || !mapContainerRef.current) return;
 
-    // Initialize Leaflet map
-    const startCenter =
-      initialCoordinates && isValidCoordinates(initialCoordinates.lat, initialCoordinates.lng)
-        ? initialCoordinates
-        : DEFAULT_CAIRO_CENTER;
+    const hasValidInit =
+      initialCoordinates && isValidCoordinates(initialCoordinates.lat, initialCoordinates.lng);
+
+    const startCenter = hasValidInit ? initialCoordinates! : DEFAULT_CAIRO_CENTER;
 
     const map = L.map(mapContainerRef.current, {
       center: [startCenter.lat, startCenter.lng],
-      zoom: initialCoordinates ? 15 : 12,
+      zoom: hasValidInit ? 15 : 12,
       zoomControl: true,
     });
 
@@ -85,25 +146,8 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
       maxZoom: 19,
     }).addTo(map);
 
-    if (initialCoordinates && isValidCoordinates(initialCoordinates.lat, initialCoordinates.lng)) {
-      markerRef.current = L.marker([initialCoordinates.lat, initialCoordinates.lng], {
-        icon: createPinIcon(),
-        draggable: true,
-      }).addTo(map);
-
-      markerRef.current.on('dragend', () => {
-        const pos = markerRef.current?.getLatLng();
-        if (pos) {
-          const rounded = {
-            lat: Number(pos.lat.toFixed(6)),
-            lng: Number(pos.lng.toFixed(6)),
-          };
-          setSelectedCoords(rounded);
-          setManualLat(String(rounded.lat));
-          setManualLng(String(rounded.lng));
-          setErrorMsg(null);
-        }
-      });
+    if (hasValidInit) {
+      placeOrUpdateMarkerOnMap(map, initialCoordinates!, false);
     }
 
     map.on('click', (e: L.LeafletMouseEvent) => {
@@ -111,42 +155,34 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
         lat: Number(e.latlng.lat.toFixed(6)),
         lng: Number(e.latlng.lng.toFixed(6)),
       };
-      setSelectedCoords(clicked);
-      setManualLat(String(clicked.lat));
-      setManualLng(String(clicked.lng));
-      setErrorMsg(null);
-
-      if (markerRef.current) {
-        markerRef.current.setLatLng([clicked.lat, clicked.lng]);
-      } else {
-        markerRef.current = L.marker([clicked.lat, clicked.lng], {
-          icon: createPinIcon(),
-          draggable: true,
-        }).addTo(map);
-
-        markerRef.current.on('dragend', () => {
-          const pos = markerRef.current?.getLatLng();
-          if (pos) {
-            const rounded = {
-              lat: Number(pos.lat.toFixed(6)),
-              lng: Number(pos.lng.toFixed(6)),
-            };
-            setSelectedCoords(rounded);
-            setManualLat(String(rounded.lat));
-            setManualLng(String(rounded.lng));
-          }
-        });
-      }
+      placeOrUpdateMarkerOnMap(map, clicked, false);
+      applyPickedCoordinatesFromMap(clicked);
     });
 
     mapInstanceRef.current = map;
 
-    // Ensure proper Leaflet sizing inside modal
+    // Auto-run search if opened with an initialSearchQuery but no initialCoordinates
+    let isCancelled = false;
+    if (!hasValidInit && initialSearchQuery.trim().length > 1) {
+      setIsSearching(true);
+      searchPlaceNominatim(initialSearchQuery).then((results) => {
+        if (isCancelled) return;
+        setIsSearching(false);
+        setSearchResults(results);
+        if (results.length > 0) {
+          const first = { lat: results[0].lat, lng: results[0].lng };
+          placeOrUpdateMarkerOnMap(map, first, true, 16);
+          applyPickedCoordinatesFromMap(first, results[0].displayName);
+        }
+      });
+    }
+
     const timer = setTimeout(() => {
       map.invalidateSize();
     }, 150);
 
     return () => {
+      isCancelled = true;
       clearTimeout(timer);
       map.remove();
       mapInstanceRef.current = null;
@@ -155,24 +191,11 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
   }, [isOpen]);
 
   const moveMapToCoordinates = (coords: Coordinates, label?: string) => {
-    setSelectedCoords(coords);
-    setManualLat(String(coords.lat));
-    setManualLng(String(coords.lng));
-    if (label) setSelectedLabel(label);
-    setErrorMsg(null);
-
     const map = mapInstanceRef.current;
     if (map) {
-      map.setView([coords.lat, coords.lng], 16);
-      if (markerRef.current) {
-        markerRef.current.setLatLng([coords.lat, coords.lng]);
-      } else {
-        markerRef.current = L.marker([coords.lat, coords.lng], {
-          icon: createPinIcon(),
-          draggable: true,
-        }).addTo(map);
-      }
+      placeOrUpdateMarkerOnMap(map, coords, true, 16);
     }
+    applyPickedCoordinatesFromMap(coords, label);
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -184,9 +207,14 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
     setIsSearching(false);
     setSearchResults(results);
     if (results.length === 0) {
-      setErrorMsg('لم يتم العثور على نتائج مطابقة في البحث. يمكنك الضغط مباشرةً على المكان المطلوب في الخريطة.');
+      setErrorMsg(
+        'لم يتم العثور على نتائج مطابقة لهذا الاسم. جرب كتابة اسم المنطقة أو الشارع أو اضغط مباشرةً على المكان المطلوب في الخريطة.'
+      );
     } else {
-      moveMapToCoordinates({ lat: results[0].lat, lng: results[0].lng }, results[0].displayName);
+      moveMapToCoordinates(
+        { lat: results[0].lat, lng: results[0].lng },
+        results[0].displayName
+      );
     }
   };
 
@@ -194,7 +222,9 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
     const lat = parseFloat(normalizeDigits(manualLat));
     const lng = parseFloat(normalizeDigits(manualLng));
     if (!isValidCoordinates(lat, lng)) {
-      setErrorMsg('الإحداثيات المدخلة غير صحيحة. يجب أن يكون خط العرض بين -90 و 90 وخط الطول بين -180 و 180.');
+      setErrorMsg(
+        'الإحداثيات المدخلة غير صحيحة. يجب أن يكون خط العرض بين -90 و 90 وخط الطول بين -180 و 180.'
+      );
       return;
     }
     moveMapToCoordinates({ lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) });
@@ -215,7 +245,9 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
         moveMapToCoordinates(coords, 'موقعي الحالي (GPS)');
       },
       () => {
-        setErrorMsg('تعذر الحصول على الموقع الحالي من المتصفح. يمكنك الضغط على الخريطة لتحديده يدويًا.');
+        setErrorMsg(
+          'تعذر الحصول على الموقع الحالي من المتصفح. يمكنك البحث عن منطقتك أو الضغط على الخريطة لتحديده يدويًا.'
+        );
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -223,7 +255,7 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
 
   const handleSave = () => {
     if (!selectedCoords || !isValidCoordinates(selectedCoords.lat, selectedCoords.lng)) {
-      setErrorMsg('يرجى الضغط على الخريطة لاختيار موقع صالح أولًا.');
+      setErrorMsg('يرجى البحث عن المكان أو الضغط على الخريطة لاختيار موقع صالح أولًا.');
       return;
     }
     onConfirm(selectedCoords, selectedLabel || searchQuery || undefined);
@@ -262,7 +294,7 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="ابحث عن عنوان أو معلم (مثال: النادي الأهلي مدينة نصر)..."
+                placeholder="ابحث عن مكان أو عنوان أو الصق رابط خرائط جوجل (مثال: سيتي سنتر مدينة نصر)..."
                 className="w-full min-h-[44px] pl-3 pr-10 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-600 focus:bg-white"
               />
               <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -270,9 +302,10 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
             <button
               type="submit"
               disabled={isSearching}
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
             >
-              {isSearching ? 'جاري البحث...' : 'بحث في الخريطة'}
+              {isSearching && <Loader2 className="w-4 h-4 animate-spin" />}
+              <span>{isSearching ? 'جاري البحث...' : 'بحث في الخريطة'}</span>
             </button>
             <button
               type="button"
@@ -286,19 +319,39 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
 
           {/* Search Results List */}
           {searchResults.length > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 max-h-32 overflow-y-auto space-y-1">
-              <p className="text-xs font-medium text-slate-500 px-2">نتائج البحث (اضغط للاختيار):</p>
-              {searchResults.map((res, idx) => (
-                <button
-                  key={`${res.lat}-${res.lng}-${idx}`}
-                  type="button"
-                  onClick={() => moveMapToCoordinates({ lat: res.lat, lng: res.lng }, res.displayName)}
-                  className="w-full text-right px-2.5 py-1.5 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-900 rounded-lg transition-colors flex items-center gap-2"
-                >
-                  <MapPin className="w-3.5 h-3.5 text-sky-600 shrink-0" />
-                  <span className="truncate">{res.displayName}</span>
-                </button>
-              ))}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 max-h-36 overflow-y-auto space-y-1">
+              <p className="text-xs font-semibold text-slate-600 px-2">
+                نتائج البحث المتاحة (اضغط لاختيار النتيجة المناسبة):
+              </p>
+              {searchResults.map((res, idx) => {
+                const isSelectedResult =
+                  selectedCoords &&
+                  Math.abs(selectedCoords.lat - res.lat) < 0.0001 &&
+                  Math.abs(selectedCoords.lng - res.lng) < 0.0001;
+
+                return (
+                  <button
+                    key={`${res.lat}-${res.lng}-${idx}`}
+                    type="button"
+                    onClick={() =>
+                      moveMapToCoordinates({ lat: res.lat, lng: res.lng }, res.displayName)
+                    }
+                    className={`w-full text-right px-2.5 py-2 text-xs rounded-lg transition-colors flex items-center justify-between gap-2 ${
+                      isSelectedResult
+                        ? 'bg-sky-100 text-sky-950 font-bold'
+                        : 'text-slate-700 hover:bg-sky-50 hover:text-sky-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <MapPin className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                      <span className="truncate">{res.displayName}</span>
+                    </div>
+                    <span className="font-mono tabular-nums text-[11px] text-slate-500 shrink-0" dir="ltr">
+                      {res.lat.toFixed(4)}, {res.lng.toFixed(4)}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -347,20 +400,27 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
 
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-t border-slate-200 bg-slate-50">
-          <div className="text-xs text-slate-600">
+          <div className="text-xs text-slate-600 min-w-0 flex-1">
             {selectedCoords ? (
-              <span>
-                الإحداثيات المختارة:{' '}
-                <strong className="font-mono tabular-nums text-slate-900" dir="ltr">
-                  {selectedCoords.lat.toFixed(6)}, {selectedCoords.lng.toFixed(6)}
-                </strong>
-              </span>
+              <div className="space-y-0.5">
+                <div className="font-semibold text-slate-900 truncate">
+                  {isReverseGeocoding ? 'جاري قراءة اسم المكان...' : selectedLabel || 'موقع محدد على الخريطة'}
+                </div>
+                <div>
+                  الإحداثيات المختارة:{' '}
+                  <strong className="font-mono tabular-nums text-sky-700" dir="ltr">
+                    {selectedCoords.lat.toFixed(6)}, {selectedCoords.lng.toFixed(6)}
+                  </strong>
+                </div>
+              </div>
             ) : (
-              <span className="text-amber-700 font-medium">لم يتم اختيار نقطة على الخريطة بعد</span>
+              <span className="text-amber-700 font-medium">
+                لم يتم اختيار نقطة على الخريطة بعد — ابحث في الأعلى أو اضغط على الخريطة
+              </span>
             )}
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
               onClick={onClose}
