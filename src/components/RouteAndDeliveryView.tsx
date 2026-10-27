@@ -91,6 +91,12 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
     const map = L.map(mapContainerRef.current, {
       center: [route.startPoint.coordinates.lat, route.startPoint.coordinates.lng],
       zoom: 13,
+      minZoom: 6,
+      maxBounds: [
+        [21.5, 24.2],
+        [32.1, 37.3],
+      ],
+      maxBoundsViscosity: 0.9,
       zoomControl: true,
     });
 

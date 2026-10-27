@@ -10,13 +10,30 @@ export function normalizeDigits(input: string): string {
 }
 
 /**
- * Validates whether numeric latitude and longitude are geographically valid and not (0,0).
+ * Egypt geographic boundaries:
+ * Latitude: 22.0° N to 31.8° N
+ * Longitude: 24.6° E to 37.0° E
+ */
+export const EGYPT_BOUNDS = {
+  minLat: 22.0,
+  maxLat: 31.8,
+  minLng: 24.6,
+  maxLng: 37.0,
+};
+
+/**
+ * Validates whether numeric latitude and longitude are geographically valid AND located within Egypt.
  */
 export function isValidCoordinates(lat: number, lng: number): boolean {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
-  if (lat < -90 || lat > 90) return false;
-  if (lng < -180 || lng > 180) return false;
-  if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return false;
+  if (
+    lat < EGYPT_BOUNDS.minLat ||
+    lat > EGYPT_BOUNDS.maxLat ||
+    lng < EGYPT_BOUNDS.minLng ||
+    lng > EGYPT_BOUNDS.maxLng
+  ) {
+    return false;
+  }
   return true;
 }
 

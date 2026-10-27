@@ -137,6 +137,12 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
     const map = L.map(mapContainerRef.current, {
       center: [startCenter.lat, startCenter.lng],
       zoom: hasValidInit ? 15 : 12,
+      minZoom: 6,
+      maxBounds: [
+        [21.5, 24.2],
+        [32.1, 37.3],
+      ],
+      maxBoundsViscosity: 0.9,
       zoomControl: true,
     });
 

@@ -1,5 +1,5 @@
 import { Coordinates, DeliveryOrder } from '../types/messigo';
-import { isValidCoordinates, normalizeDigits, parseMapUrl } from './whatsappParser';
+import { EGYPT_BOUNDS, isValidCoordinates, normalizeDigits, parseMapUrl } from './whatsappParser';
 
 export interface GeocodingSearchResult {
   lat: number;
@@ -8,8 +8,10 @@ export interface GeocodingSearchResult {
 }
 
 /**
- * Generates normalized Arabic query variations to handle Egyptian & Arabic spelling differences
- * and strips apartment/floor/villa unit numbers so map geocoders locate the exact district/compound.
+ * Generates normalized Arabic query variations tailored specifically for Egypt:
+ * - Standardizes Egyptian Arabic spelling (ى -> ي, مدينه -> مدينة, etc.)
+ * - Strips apartment/floor/villa unit numbers for cleaner landmark matching
+ * - Appends "مصر" context when needed so geocoders prioritize Egyptian districts
  */
 export function buildArabicSearchVariants(rawQuery: string): string[] {
   const clean = normalizeDigits(rawQuery)
@@ -19,7 +21,6 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
 
   if (!clean) return [];
 
-  // Variant 1: Standardize final ى -> ي and common Egyptian ه -> ة words
   const standardized = clean
     .replace(/ى(?=\s|$)/g, 'ي')
     .replace(/\bمدينه\b/g, 'مدينة')
@@ -45,8 +46,7 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
     .replace(/\bالقطاميه\b/g, 'القطامية')
     .replace(/\bالمرحله\b/g, 'المرحلة');
 
-  // Variant 2: Strip unit/villa/floor/gate numbers ("فيلا 331", "الدور الأول", "شقة 4", "الدخول من بوابة 4", leading house numbers)
-  // so the geocoder finds the compound/neighborhood cleanly!
+  // Strip unit/villa/floor/gate numbers ("فيلا 331", "الدور الأول", "شقة 4", "الدخول من بوابة 4")
   const cleanedLandmarkOrDistrict = standardized
     .replace(/(?:الدخول من\s*)?بوابة\s*\d+/g, '')
     .replace(/الدور\s+\S+/g, '')
@@ -59,17 +59,28 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
     .replace(/\s+/g, ' ')
     .trim();
 
+  const withEgyptSuffix = /مصر/i.test(cleanedLandmarkOrDistrict)
+    ? cleanedLandmarkOrDistrict
+    : `${cleanedLandmarkOrDistrict}، مصر`;
+
   return Array.from(
-    new Set([standardized, cleanedLandmarkOrDistrict, clean].filter((s) => s.length >= 2))
+    new Set(
+      [standardized, cleanedLandmarkOrDistrict, withEgyptSuffix, clean].filter(
+        (s) => s.length >= 2
+      )
+    )
   );
 }
 
 /**
- * Queries Photon (OpenStreetMap Komoot geocoder) which is fast, CORS-friendly, and handles OSM POIs well.
+ * Queries Photon (OpenStreetMap) strictly bounded to Egypt (`bbox=24.6,22.0,37.0,31.8` and biased to Cairo).
  */
-async function fetchPhotonResults(query: string): Promise<GeocodingSearchResult[]> {
+async function fetchPhotonResultsEgypt(query: string): Promise<GeocodingSearchResult[]> {
   try {
-    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=6`;
+    const bbox = `${EGYPT_BOUNDS.minLng},${EGYPT_BOUNDS.minLat},${EGYPT_BOUNDS.maxLng},${EGYPT_BOUNDS.maxLat}`;
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(
+      query
+    )}&bbox=${bbox}&lat=30.0444&lon=31.2357&limit=8`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -86,35 +97,44 @@ async function fetchPhotonResults(query: string): Promise<GeocodingSearchResult[
             city?: string;
             state?: string;
             country?: string;
+            countrycode?: string;
           };
         }) => {
           const coords = f.geometry?.coordinates;
           if (!coords || coords.length < 2) return null;
           const lng = Number(coords[0]);
           const lat = Number(coords[1]);
-          if (!isValidCoordinates(lat, lng)) return null;
 
+          // Strictly enforce Egypt boundaries & country code
+          if (!isValidCoordinates(lat, lng)) return null;
           const p = f.properties || {};
-          const parts = [p.name, p.street, p.district, p.city, p.state, p.country].filter(Boolean);
-          const displayName = parts.length > 0 ? Array.from(new Set(parts)).join('، ') : query;
+          if (p.countrycode && p.countrycode.toUpperCase() !== 'EG') return null;
+
+          const parts = [p.name, p.street, p.district, p.city, p.state].filter(Boolean);
+          const displayName =
+            parts.length > 0 ? Array.from(new Set(parts)).join('، ') : query;
 
           return { lat, lng, displayName };
         }
       )
-      .filter((item: GeocodingSearchResult | null): item is GeocodingSearchResult => item !== null);
+      .filter(
+        (item: GeocodingSearchResult | null): item is GeocodingSearchResult =>
+          item !== null
+      );
   } catch {
     return [];
   }
 }
 
 /**
- * Queries ArcGIS World Geocoding Service which has strong Arabic street & landmark coverage.
+ * Queries ArcGIS World Geocoding Service strictly restricted to Egypt (`countryCode=EGY`).
  */
-async function fetchArcGisResults(query: string): Promise<GeocodingSearchResult[]> {
+async function fetchArcGisResultsEgypt(query: string): Promise<GeocodingSearchResult[]> {
   try {
+    const searchExtent = `${EGYPT_BOUNDS.minLng},${EGYPT_BOUNDS.minLat},${EGYPT_BOUNDS.maxLng},${EGYPT_BOUNDS.maxLat}`;
     const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=${encodeURIComponent(
       query
-    )}&maxLocations=6&outFields=Match_addr,PlaceName,Place_addr`;
+    )}&countryCode=EGY&searchExtent=${searchExtent}&location=31.2357,30.0444&maxLocations=8&outFields=Match_addr,PlaceName,Place_addr,Country`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -125,14 +145,21 @@ async function fetchArcGisResults(query: string): Promise<GeocodingSearchResult[
         (c: {
           address?: string;
           location?: { x?: number; y?: number };
-          attributes?: { PlaceName?: string; Place_addr?: string; Match_addr?: string };
+          attributes?: {
+            PlaceName?: string;
+            Place_addr?: string;
+            Match_addr?: string;
+            Country?: string;
+          };
         }) => {
           const lat = Number(c.location?.y);
           const lng = Number(c.location?.x);
           if (!isValidCoordinates(lat, lng)) return null;
+          if (c.attributes?.Country && c.attributes.Country !== 'EGY') return null;
 
           const placeName = c.attributes?.PlaceName || '';
-          const placeAddr = c.attributes?.Place_addr || c.attributes?.Match_addr || c.address || '';
+          const placeAddr =
+            c.attributes?.Place_addr || c.attributes?.Match_addr || c.address || '';
           const displayName =
             placeName && placeAddr && !placeAddr.includes(placeName)
               ? `${placeName} — ${placeAddr}`
@@ -141,20 +168,24 @@ async function fetchArcGisResults(query: string): Promise<GeocodingSearchResult[
           return { lat, lng, displayName };
         }
       )
-      .filter((item: GeocodingSearchResult | null): item is GeocodingSearchResult => item !== null);
+      .filter(
+        (item: GeocodingSearchResult | null): item is GeocodingSearchResult =>
+          item !== null
+      );
   } catch {
     return [];
   }
 }
 
 /**
- * Queries OpenStreetMap Nominatim as an additional source.
+ * Queries OpenStreetMap Nominatim strictly restricted to Egypt (`countrycodes=eg&bounded=1`).
  */
-async function fetchNominatimResults(query: string): Promise<GeocodingSearchResult[]> {
+async function fetchNominatimResultsEgypt(query: string): Promise<GeocodingSearchResult[]> {
   try {
+    const viewbox = `${EGYPT_BOUNDS.minLng},${EGYPT_BOUNDS.maxLat},${EGYPT_BOUNDS.maxLng},${EGYPT_BOUNDS.minLat}`;
     const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
       query
-    )}&limit=5&accept-language=ar,en`;
+    )}&countrycodes=eg&viewbox=${viewbox}&bounded=1&limit=5&accept-language=ar,en`;
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return [];
     const data = await res.json();
@@ -173,10 +204,8 @@ async function fetchNominatimResults(query: string): Promise<GeocodingSearchResu
 }
 
 /**
- * Multi-provider Arabic & English place search:
- * 1. Checks if the user pasted a Google Maps URL or direct coordinates (lat, lng).
- * 2. Normalizes Egyptian/Arabic spelling variations and unit numbers.
- * 3. Queries Photon (OSM), ArcGIS World Geocoder, and Nominatim, combining and deduplicating results.
+ * Egypt-dedicated multi-provider place search:
+ * Guarantees all returned locations are strictly inside Egypt (`مصر`).
  */
 export async function searchPlaceNominatim(query: string): Promise<GeocodingSearchResult[]> {
   const cleanQuery = query.trim();
@@ -185,12 +214,12 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
   // 1. Check if input is a Google Maps link
   if (/^https?:\/\//i.test(cleanQuery) || /google\.com\/maps|goo\.gl/i.test(cleanQuery)) {
     const parsed = parseMapUrl(cleanQuery);
-    if (parsed.coordinates) {
+    if (parsed.coordinates && isValidCoordinates(parsed.coordinates.lat, parsed.coordinates.lng)) {
       return [
         {
           lat: parsed.coordinates.lat,
           lng: parsed.coordinates.lng,
-          displayName: `إحداثيات مستخرجة من الرابط (${parsed.coordinates.lat.toFixed(5)}, ${parsed.coordinates.lng.toFixed(5)})`,
+          displayName: `إحداثيات مستخرجة داخل مصر (${parsed.coordinates.lat.toFixed(5)}, ${parsed.coordinates.lng.toFixed(5)})`,
         },
       ];
     }
@@ -212,20 +241,20 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
         {
           lat,
           lng,
-          displayName: `إحداثيات مباشرة (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+          displayName: `إحداثيات مباشرة داخل مصر (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
         },
       ];
     }
   }
 
-  // 3. Build Arabic spelling & unit-stripped variants and query providers
+  // 3. Build Egypt-focused Arabic search variants and query providers
   const variants = buildArabicSearchVariants(cleanQuery);
   const primaryVariant = variants[0] || cleanQuery;
 
   const [photonRes, arcgisRes, nominatimRes] = await Promise.all([
-    fetchPhotonResults(primaryVariant),
-    fetchArcGisResults(primaryVariant),
-    fetchNominatimResults(primaryVariant),
+    fetchPhotonResultsEgypt(primaryVariant),
+    fetchArcGisResultsEgypt(primaryVariant),
+    fetchNominatimResultsEgypt(primaryVariant),
   ]);
 
   const combined = [...photonRes, ...arcgisRes, ...nominatimRes];
@@ -233,17 +262,18 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
   if (variants.length > 1) {
     for (let i = 1; i < variants.length; i++) {
       const [p2, a2] = await Promise.all([
-        fetchPhotonResults(variants[i]),
-        fetchArcGisResults(variants[i]),
+        fetchPhotonResultsEgypt(variants[i]),
+        fetchArcGisResultsEgypt(variants[i]),
       ]);
       combined.push(...p2, ...a2);
-      if (combined.length >= 4) break;
+      if (combined.length >= 5) break;
     }
   }
 
-  // Deduplicate results that are within 35 meters of each other
+  // Deduplicate results that are within 35 meters of each other and strictly inside Egypt
   const uniqueResults: GeocodingSearchResult[] = [];
   for (const candidate of combined) {
+    if (!isValidCoordinates(candidate.lat, candidate.lng)) continue;
     const isDup = uniqueResults.some(
       (existing) =>
         calculateDistanceMetersBetweenCoords(
@@ -264,7 +294,7 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
 }
 
 /**
- * Reverse-geocodes coordinates clicked on the map into a human-readable Arabic street/area name.
+ * Reverse-geocodes coordinates clicked on the map into a human-readable Arabic street/area name inside Egypt.
  */
 export async function reverseGeocodeCoordinates(coords: Coordinates): Promise<string | null> {
   if (!isValidCoordinates(coords.lat, coords.lng)) return null;
@@ -273,7 +303,8 @@ export async function reverseGeocodeCoordinates(coords: Coordinates): Promise<st
     const res = await fetch(url);
     if (res.ok) {
       const data = await res.json();
-      const addr = data?.address?.LongLabel || data?.address?.Match_addr || data?.address?.Address;
+      const addr =
+        data?.address?.LongLabel || data?.address?.Match_addr || data?.address?.Address;
       if (addr && typeof addr === 'string') {
         return addr;
       }
@@ -301,8 +332,7 @@ export async function reverseGeocodeCoordinates(coords: Coordinates): Promise<st
 }
 
 /**
- * Computes Haversine distance in meters between two coordinates (used ONLY for duplicate location warning detection,
- * NEVER used for route optimization which uses actual OSRM road network distances).
+ * Computes Haversine distance in meters between two coordinates (used ONLY for duplicate location warning detection).
  */
 export function calculateDistanceMetersBetweenCoords(a: Coordinates, b: Coordinates): number {
   const R = 6371000;
@@ -344,7 +374,7 @@ export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): Delive
 
     if (!isValidCoordinates(copy.coordinates.lat, copy.coordinates.lng)) {
       copy.locationStatus = 'الإحداثيات غير صحيحة';
-      copy.reviewNote = 'الإحداثيات المدخلة خارج النطاق الجغرافي الصحيح.';
+      copy.reviewNote = 'الإحداثيات خارج حدود جمهورية مصر العربية؛ يرجى تحديد الموقع داخل مصر.';
       return copy;
     }
 
@@ -352,7 +382,7 @@ export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): Delive
       copy.locationStatus = 'يحتاج إلى مراجعة';
       if (!copy.reviewNote) {
         copy.reviewNote =
-          'تم تحديد الموقع المبدئي من خلال خدمة الخرائط؛ يرجى مراجعته وتأكيده قبل حساب المسار.';
+          'تم تحديد الموقع المبدئي داخل مصر من خلال خدمة الخرائط؛ يرجى مراجعته وتأكيده قبل حساب المسار.';
       }
       return copy;
     }
@@ -392,7 +422,7 @@ export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): Delive
 
 /**
  * Attempts to geocode orders that have a searchQueryFromUrl or locationText/address but no direct coordinates.
- * Marks found locations as "يحتاج إلى مراجعة" (`locationConfirmedByUser = false`) so the user explicitly reviews and confirms them.
+ * Strictly resolves only to locations inside Egypt.
  */
 export async function resolvePendingOrderLocations(
   orders: DeliveryOrder[],
@@ -427,14 +457,14 @@ export async function resolvePendingOrderLocations(
         locationConfirmedByUser: false,
         locationStatus: 'يحتاج إلى مراجعة',
         reviewNote:
-          'تم العثور على الموقع عبر خدمة الخرائط بناءً على نص البحث؛ يرجى مراجعته على الخريطة والضغط على «تأكيد صحة الموقع».',
+          'تم العثور على الموقع داخل مصر عبر خدمة الخرائط؛ يرجى مراجعته والضغط على «تأكيد صحة الموقع».',
       };
     } else {
       result[idx] = {
         ...o,
         locationStatus: 'الموقع غير موجود',
         reviewNote:
-          'تعذر العثور على إحداثيات تلقائية لهذا العنوان؛ يرجى تحديد الموقع يدويًا على الخريطة.',
+          'تعذر العثور على إحداثيات تلقائية لهذا العنوان داخل مصر؛ يرجى تحديد الموقع يدويًا على الخريطة.',
       };
     }
   }
