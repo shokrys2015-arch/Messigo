@@ -1,0 +1,6 @@
+{
+  "name": "Messigo - إدارة أوردرات التوصيل وتحسين خط السير",
+  "description": "تطبيق ويب متكامل لتحليل أوردرات التوصيل من رسائل واتساب، التحقق من مواقع العملاء، وحساب أفضل خط سير فعلي على الطرق بأقل مسافة ممكنة.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
