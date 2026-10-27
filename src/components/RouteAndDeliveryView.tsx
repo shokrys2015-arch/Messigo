@@ -100,10 +100,9 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
       zoomControl: true,
     });
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
-      maxZoom: 19,
+    L.tileLayer('https://mt1.google.com/vt/lyrs=m&hl=ar&gl=EG&x={x}&y={y}&z={z}', {
+      attribution: '&copy; Google Maps / OpenStreetMap contributors',
+      maxZoom: 20,
     }).addTo(map);
 
     mapInstanceRef.current = map;

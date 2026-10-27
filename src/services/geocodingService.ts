@@ -8,10 +8,264 @@ export interface GeocodingSearchResult {
 }
 
 /**
- * Generates normalized Arabic query variations tailored specifically for Egypt:
- * - Standardizes Egyptian Arabic spelling (ى -> ي, مدينه -> مدينة, etc.)
- * - Strips apartment/floor/villa unit numbers for cleaner landmark matching
- * - Appends "مصر" context when needed so geocoders prioritize Egyptian districts
+ * Curated high-precision Gazetteer of major Egyptian compounds, malls, clubs, and districts
+ * that free OSM/ArcGIS geocoders frequently confuse (e.g. Palm Hills Katameya vs Palm Hills October,
+ * West Golf New Cairo vs Golf October, City Centre Almaza vs City Center Nasr City, etc.).
+ */
+const EGYPT_LANDMARKS_GAZETTEER: Array<{
+  keywords: string[];
+  mustNotContain?: string[];
+  lat: number;
+  lng: number;
+  displayName: string;
+}> = [
+  {
+    keywords: ['بالم هيلز قطامية', 'بالم هيلز قطاميه', 'بالم هيلز القطامية', 'بالم هيلز التجمع'],
+    lat: 30.0086,
+    lng: 31.4884,
+    displayName: 'كمبوند بالم هيلز قطامية (PK1 / PK2)، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['بالم هيلز القاهرة الجديدة', 'بالم هيلز نيو كايرو'],
+    lat: 30.0185,
+    lng: 31.5425,
+    displayName: 'كمبوند بالم هيلز القاهرة الجديدة، التجمع الخامس',
+  },
+  {
+    keywords: ['بالم هيلز'],
+    mustNotContain: ['قطامية', 'قطاميه', 'التجمع', 'القاهرة الجديدة', 'العلمين', 'الساحل'],
+    lat: 29.9964,
+    lng: 31.0286,
+    displayName: 'كمبوند بالم هيلز أكتوبر، السادس من أكتوبر، الجيزة',
+  },
+  {
+    keywords: ['غرب الجولف', 'غرب الغولف'],
+    lat: 29.9978,
+    lng: 31.4125,
+    displayName: 'حي غرب الجولف، التجمع الثالث / الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['سيتي سنتر ألماظة', 'سيتي سنتر الماظة', 'سيتي سنتر الماظه'],
+    lat: 30.0819,
+    lng: 31.3644,
+    displayName: 'سيتي سنتر ألماظة، طريق السويس، مصر الجديدة، القاهرة',
+  },
+  {
+    keywords: ['سيتي سنتر مدينة نصر', 'سيتى سنتر مدينه نصر', 'سيتي سنتر مكرم عبيد'],
+    lat: 30.068342,
+    lng: 31.344687,
+    displayName: 'سيتي سنتر مول، شارع مكرم عبيد، مدينة نصر، القاهرة',
+  },
+  {
+    keywords: ['سيتي ستارز', 'سيتى ستارز'],
+    lat: 30.0729,
+    lng: 31.3459,
+    displayName: 'سيتي ستارز مول، مدينة نصر، القاهرة',
+  },
+  {
+    keywords: ['كايرو فيستيفال', 'فيستيفال سيتي'],
+    lat: 30.0286,
+    lng: 31.4075,
+    displayName: 'كايرو فيستيفال سيتي، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['ميفيدا', 'كمبوند ميفيدا'],
+    lat: 30.0148,
+    lng: 31.4978,
+    displayName: 'كمبوند ميفيدا إعمار، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['هايد بارك', 'كمبوند هايد بارك'],
+    lat: 30.0067,
+    lng: 31.5162,
+    displayName: 'كمبوند هايد بارك، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['ماونتن فيو اي سيتي التجمع', 'ماونتن فيو التجمع', 'ماونتن فيو هايد بارك'],
+    lat: 30.0156,
+    lng: 31.5194,
+    displayName: 'كمبوند ماونتن فيو، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['ماونتن فيو اكتوبر', 'ماونتن فيو تشيل اوت', 'ماونتن فيو اي سيتي اكتوبر'],
+    lat: 30.0265,
+    lng: 30.9628,
+    displayName: 'كمبوند ماونتن فيو، السادس من أكتوبر، الجيزة',
+  },
+  {
+    keywords: ['النادي الأهلي فرع مدينة نصر', 'النادي الاهلي مدينة نصر', 'الأهلي مدينة نصر'],
+    lat: 30.0711,
+    lng: 31.3539,
+    displayName: 'النادي الأهلي – فرع مدينة نصر، القاهرة',
+  },
+  {
+    keywords: ['النادي الأهلي الجزيرة', 'النادي الاهلي الجزيره'],
+    lat: 30.0451,
+    lng: 31.2225,
+    displayName: 'النادي الأهلي – المقر الرئيسي بالجزيرة، القاهرة',
+  },
+  {
+    keywords: ['النادي الأهلي الشيخ زايد', 'الأهلي زايد'],
+    lat: 30.0568,
+    lng: 30.9781,
+    displayName: 'النادي الأهلي – فرع الشيخ زايد، الجيزة',
+  },
+  {
+    keywords: ['النادي الأهلي التجمع', 'الأهلي التجمع الخامس'],
+    lat: 30.0235,
+    lng: 31.5361,
+    displayName: 'النادي الأهلي – فرع التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['مدينتي', 'مدينتى'],
+    lat: 30.0886,
+    lng: 31.6389,
+    displayName: 'مدينتي، القاهرة الجديدة، القاهرة',
+  },
+  {
+    keywords: ['مدينة الرحاب', 'الرحاب'],
+    lat: 30.0609,
+    lng: 31.4919,
+    displayName: 'مدينة الرحاب، القاهرة الجديدة، القاهرة',
+  },
+  {
+    keywords: ['التجمع الثالث'],
+    lat: 29.9854,
+    lng: 31.4342,
+    displayName: 'التجمع الثالث، القاهرة الجديدة، القاهرة',
+  },
+  {
+    keywords: ['التجمع الخامس'],
+    lat: 30.0074,
+    lng: 31.4386,
+    displayName: 'التجمع الخامس، القاهرة الجديدة، القاهرة',
+  },
+  {
+    keywords: ['التجمع الأول', 'التجمع الاول'],
+    lat: 30.0558,
+    lng: 31.4428,
+    displayName: 'التجمع الأول، القاهرة الجديدة، القاهرة',
+  },
+  {
+    keywords: ['حي النرجس', 'النرجس التجمع', 'النرجس فيلات', 'النرجس عمارات'],
+    lat: 29.9985,
+    lng: 31.4485,
+    displayName: 'حي النرجس، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['حي الياسمين', 'الياسمين التجمع'],
+    lat: 30.0365,
+    lng: 31.4535,
+    displayName: 'حي الياسمين، التجمع الأول / الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['حي البنفسج', 'البنفسج التجمع'],
+    lat: 30.0412,
+    lng: 31.4682,
+    displayName: 'حي البنفسج، التجمع الأول / الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['حي اللوتس', 'اللوتس الجنوبية', 'اللوتس الشمالية'],
+    lat: 30.0178,
+    lng: 31.4912,
+    displayName: 'حي اللوتس، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['حي الأندلس', 'الاندلس التجمع'],
+    lat: 30.0032,
+    lng: 31.5034,
+    displayName: 'حي الأندلس، التجمع الخامس، القاهرة الجديدة',
+  },
+  {
+    keywords: ['بيت الوطن التجمع', 'بيت الوطن القاهرة الجديدة'],
+    lat: 30.0485,
+    lng: 31.5412,
+    displayName: 'بيت الوطن، القاهرة الجديدة',
+  },
+  {
+    keywords: ['بيفرلي هيلز', 'بيفرلى هيلز'],
+    lat: 30.0598,
+    lng: 30.9612,
+    displayName: 'كمبوند بيفرلي هيلز، الشيخ زايد، الجيزة',
+  },
+  {
+    keywords: ['مول العرب', 'مول العرب اكتوبر'],
+    lat: 30.0067,
+    lng: 30.9742,
+    displayName: 'مول العرب، ميدان جهينة، السادس من أكتوبر، الجيزة',
+  },
+  {
+    keywords: ['مول مصر', 'مول مصر اكتوبر'],
+    lat: 29.9725,
+    lng: 31.0168,
+    displayName: 'مول مصر، طريق الواحات، السادس من أكتوبر، الجيزة',
+  },
+  {
+    keywords: ['حدائق الأهرام', 'حدائق الاهرام', 'هضبة الأهرام'],
+    lat: 29.9718,
+    lng: 31.1045,
+    displayName: 'حدائق الأهرام، الجيزة',
+  },
+  {
+    keywords: ['زهراء المعادي', 'زهراء المعادى'],
+    lat: 29.9668,
+    lng: 31.3095,
+    displayName: 'زهراء المعادي، المعادي، القاهرة',
+  },
+  {
+    keywords: ['الهضبة الوسطى', 'المقطم الهضبة الوسطى'],
+    lat: 30.0012,
+    lng: 31.3185,
+    displayName: 'الهضبة الوسطى، المقطم، القاهرة',
+  },
+];
+
+/**
+ * Normalizes Arabic text for matching against the Egyptian gazetteer and external geocoders.
+ */
+export function normalizeEgyptianText(input: string): string {
+  return normalizeDigits(input)
+    .trim()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ى(?=\s|$)/g, 'ي')
+    .replace(/ة(?=\s|$)/g, 'ه')
+    .replace(/[–—\-،,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Matches a query against our curated Egypt Landmarks & Compounds Gazetteer.
+ */
+function matchEgyptGazetteer(query: string): GeocodingSearchResult[] {
+  const normQuery = normalizeEgyptianText(query);
+  if (!normQuery) return [];
+
+  const matched: GeocodingSearchResult[] = [];
+  for (const item of EGYPT_LANDMARKS_GAZETTEER) {
+    if (item.mustNotContain) {
+      const hasExcluded = item.mustNotContain.some((ex) =>
+        normQuery.includes(normalizeEgyptianText(ex))
+      );
+      if (hasExcluded) continue;
+    }
+
+    const isMatch = item.keywords.some((kw) =>
+      normQuery.includes(normalizeEgyptianText(kw))
+    );
+    if (isMatch) {
+      matched.push({
+        lat: item.lat,
+        lng: item.lng,
+        displayName: item.displayName,
+      });
+    }
+  }
+  return matched;
+}
+
+/**
+ * Generates normalized Arabic query variations tailored specifically for Egypt.
  */
 export function buildArabicSearchVariants(rawQuery: string): string[] {
   const clean = normalizeDigits(rawQuery)
@@ -73,7 +327,7 @@ export function buildArabicSearchVariants(rawQuery: string): string[] {
 }
 
 /**
- * Queries Photon (OpenStreetMap) strictly bounded to Egypt (`bbox=24.6,22.0,37.0,31.8` and biased to Cairo).
+ * Queries Photon (OpenStreetMap) strictly bounded to Egypt.
  */
 async function fetchPhotonResultsEgypt(query: string): Promise<GeocodingSearchResult[]> {
   try {
@@ -105,7 +359,6 @@ async function fetchPhotonResultsEgypt(query: string): Promise<GeocodingSearchRe
           const lng = Number(coords[0]);
           const lat = Number(coords[1]);
 
-          // Strictly enforce Egypt boundaries & country code
           if (!isValidCoordinates(lat, lng)) return null;
           const p = f.properties || {};
           if (p.countrycode && p.countrycode.toUpperCase() !== 'EG') return null;
@@ -205,7 +458,9 @@ async function fetchNominatimResultsEgypt(query: string): Promise<GeocodingSearc
 
 /**
  * Egypt-dedicated multi-provider place search:
- * Guarantees all returned locations are strictly inside Egypt (`مصر`).
+ * 1. Parses pasted Google Maps links or direct coordinates.
+ * 2. Matches against the high-precision Egyptian Landmarks & Compounds Gazetteer first.
+ * 3. Queries Photon (OSM), ArcGIS Egypt, and Nominatim Egypt.
  */
 export async function searchPlaceNominatim(query: string): Promise<GeocodingSearchResult[]> {
   const cleanQuery = query.trim();
@@ -219,7 +474,7 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
         {
           lat: parsed.coordinates.lat,
           lng: parsed.coordinates.lng,
-          displayName: `إحداثيات مستخرجة داخل مصر (${parsed.coordinates.lat.toFixed(5)}, ${parsed.coordinates.lng.toFixed(5)})`,
+          displayName: `موقع مستخرج من رابط خرائط جوجل (${parsed.coordinates.lat.toFixed(5)}, ${parsed.coordinates.lng.toFixed(5)})`,
         },
       ];
     }
@@ -247,7 +502,10 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
     }
   }
 
-  // 3. Build Egypt-focused Arabic search variants and query providers
+  // 3. Match against curated Egyptian Compounds & Landmarks Gazetteer first!
+  const gazetteerMatches = matchEgyptGazetteer(cleanQuery);
+
+  // 4. Query external Egypt-restricted geocoders
   const variants = buildArabicSearchVariants(cleanQuery);
   const primaryVariant = variants[0] || cleanQuery;
 
@@ -257,9 +515,9 @@ export async function searchPlaceNominatim(query: string): Promise<GeocodingSear
     fetchNominatimResultsEgypt(primaryVariant),
   ]);
 
-  const combined = [...photonRes, ...arcgisRes, ...nominatimRes];
+  const combined = [...gazetteerMatches, ...photonRes, ...arcgisRes, ...nominatimRes];
 
-  if (variants.length > 1) {
+  if (combined.length < 3 && variants.length > 1) {
     for (let i = 1; i < variants.length; i++) {
       const [p2, a2] = await Promise.all([
         fetchPhotonResultsEgypt(variants[i]),
@@ -332,7 +590,7 @@ export async function reverseGeocodeCoordinates(coords: Coordinates): Promise<st
 }
 
 /**
- * Computes Haversine distance in meters between two coordinates (used ONLY for duplicate location warning detection).
+ * Computes Haversine distance in meters between two coordinates.
  */
 export function calculateDistanceMetersBetweenCoords(a: Coordinates, b: Coordinates): number {
   const R = 6371000;
@@ -422,7 +680,6 @@ export function recalculateOrdersLocationStatus(orders: DeliveryOrder[]): Delive
 
 /**
  * Attempts to geocode orders that have a searchQueryFromUrl or locationText/address but no direct coordinates.
- * Strictly resolves only to locations inside Egypt.
  */
 export async function resolvePendingOrderLocations(
   orders: DeliveryOrder[],

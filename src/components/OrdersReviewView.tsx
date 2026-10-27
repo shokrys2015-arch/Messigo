@@ -422,7 +422,12 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
       ) : (
         <div className="space-y-4">
           {filteredOrders.map((order, idx) => {
-            const googleMapsUrl = buildGoogleMapsDirectionUrl(order.coordinates, order.mapUrl);
+            const googleMapsUrl = buildGoogleMapsDirectionUrl(
+              order.coordinates,
+              order.mapUrl,
+              order.address || order.locationText,
+              !order.locationConfirmedByUser
+            );
             const isReady = isOrderLocationReadyForRoute(order);
 
             return (

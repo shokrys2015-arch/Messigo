@@ -146,10 +146,10 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
       zoomControl: true,
     });
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
-      maxZoom: 19,
+    // High-legibility Arabic street map tiles
+    L.tileLayer('https://mt1.google.com/vt/lyrs=m&hl=ar&gl=EG&x={x}&y={y}&z={z}', {
+      attribution: '&copy; Google Maps / OpenStreetMap contributors',
+      maxZoom: 20,
     }).addTo(map);
 
     if (hasValidInit) {
@@ -321,6 +321,19 @@ export const InteractiveMapModal: React.FC<InteractiveMapModalProps> = ({
               <Compass className="w-4 h-4 text-sky-600" />
               <span>موقعي الحالي</span>
             </button>
+            {searchQuery.trim() && (
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                  /مصر/i.test(searchQuery) ? searchQuery.trim() : `${searchQuery.trim()}، مصر`
+                )}`}
+                target="_blank"
+                rel="noreferrer"
+                className="min-h-[44px] px-3.5 py-2 rounded-xl border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                title="افتح هذا العنوان في خرائط جوجل ثم انسخ الرابط والصقه هنا"
+              >
+                <span>فتح البحث في خرائط جوجل</span>
+              </a>
+            )}
           </form>
 
           {/* Search Results List */}

@@ -400,17 +400,46 @@ export function formatDurationArabic(seconds: number): string {
 }
 
 /**
- * Builds an accurate Google Maps navigation/place link for an order or coordinates.
+ * Builds an accurate Google Maps navigation/place link for an order or coordinates:
+ * - If the customer sent an explicit Google Maps link (`fallbackUrl`) and the user hasn't manually overridden coordinates, or for direct place opening, respects `fallbackUrl`.
+ * - If confirmed coordinates exist, builds a direct Google Maps driving directions URL.
+ * - Otherwise builds a Google Maps search URL using the textual address in Egypt.
  */
 export function buildGoogleMapsDirectionUrl(
   coordinates: Coordinates | null,
-  fallbackUrl?: string
+  fallbackUrl?: string,
+  addressQuery?: string,
+  preferOriginalUrlOrAddress = false
 ): string {
+  if (preferOriginalUrlOrAddress) {
+    if (fallbackUrl && /^https?:\/\//i.test(fallbackUrl)) {
+      return fallbackUrl;
+    }
+    if (addressQuery && addressQuery.trim().length > 1) {
+      const q = /مصر/i.test(addressQuery) ? addressQuery.trim() : `${addressQuery.trim()}، مصر`;
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+    }
+  }
+
   if (coordinates && isValidCoordinates(coordinates.lat, coordinates.lng)) {
     return `https://www.google.com/maps/dir/?api=1&destination=${coordinates.lat},${coordinates.lng}&travelmode=driving`;
   }
   if (fallbackUrl && /^https?:\/\//i.test(fallbackUrl)) {
     return fallbackUrl;
   }
+  if (addressQuery && addressQuery.trim().length > 1) {
+    const q = /مصر/i.test(addressQuery) ? addressQuery.trim() : `${addressQuery.trim()}، مصر`;
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  }
   return '';
+}
+
+/**
+ * Builds a Google Maps Search URL by textual address inside Egypt so the user can open any address directly in Google Maps.
+ */
+export function buildGoogleMapsAddressSearchUrl(addressQuery: string): string {
+  const clean = addressQuery.trim();
+  if (!clean) return 'https://www.google.com/maps';
+  const q = /مصر/i.test(clean) ? clean : `${clean}، مصر`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }
