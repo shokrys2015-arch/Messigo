@@ -171,8 +171,9 @@ export function splitBulkWhatsappMessages(rawInput: string): { text: string; unc
       .map((text) => ({ text, uncertainSplit: false }));
   }
 
-  // 2. Check for WhatsApp timestamp headers:
-  const waHeaderRegex = /(?:^|\n)(?=\[?\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[،,\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APMapmصم])?\]?\s*(?:-\s*)?[^:\n]{1,40}:\s*)/g;
+  // 2. Check for WhatsApp timestamp headers (covers Month/Day, Day/Month, 12h/24h, Arabic digits, etc.):
+  const waHeaderRegex =
+    /(?:^|\n)(?=\[?(?:[0-9٠-٩]{1,4}[/.-][0-9٠-٩]{1,2}(?:[/.-][0-9٠-٩]{2,4})?[،,\s]+[0-9٠-٩]{1,2}:[0-9٠-٩]{2}(?::[0-9٠-٩]{2})?(?:\s*[APMapmصم])?|[0-9٠-٩]{1,2}:[0-9٠-٩]{2}(?::[0-9٠-٩]{2})?(?:\s*[APMapmصم])?[،,\s]+[0-9٠-٩]{1,4}[/.-][0-9٠-٩]{1,2}(?:[/.-][0-9٠-٩]{2,4})?)\]?\s*(?:-\s*)?[^:\n]{1,80}:\s*)/g;
   const waBlocks = cleaned
     .split(waHeaderRegex)
     .map((s) => s.trim())
@@ -246,16 +247,13 @@ export function parseSingleOrderMessage(
   uncertainSplit = false
 ): DeliveryOrder {
   const id = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  const cleanedBlock = rawBlock
-    .replace(
-      /^\[?\d{1,4}[/-]\d{1,2}[/-]\d{1,4}[،,\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APMapmصم])?\]?\s*(?:-\s*)?[^:\n]{1,40}:\s*/,
-      ''
-    )
-    .trim();
+  const waLineHeaderRegex =
+    /^\[?(?:[0-9٠-٩]{1,4}[/.-][0-9٠-٩]{1,2}(?:[/.-][0-9٠-٩]{2,4})?[،,\s]+[0-9٠-٩]{1,2}:[0-9٠-٩]{2}(?::[0-9٠-٩]{2})?(?:\s*[APMapmصم])?|[0-9٠-٩]{1,2}:[0-9٠-٩]{2}(?::[0-9٠-٩]{2})?(?:\s*[APMapmصم])?[،,\s]+[0-9٠-٩]{1,4}[/.-][0-9٠-٩]{1,2}(?:[/.-][0-9٠-٩]{2,4})?)\]?\s*(?:-\s*)?[^:\n]{1,80}:\s*/;
 
-  const rawLines = cleanedBlock
+  // Split lines and strip any WhatsApp timestamp/sender prefixes from each line
+  const rawLines = rawBlock
     .split('\n')
-    .map((l) => l.trim())
+    .map((l) => l.replace(waLineHeaderRegex, '').trim())
     .filter(Boolean);
 
   let customerName = '';
@@ -332,22 +330,56 @@ export function parseSingleOrderMessage(
     }
   });
 
-  // 3. Extract Phone Number (supports spaces like "+20 104 4544066" or "رقم الموبايل: 012...")
+  // 3. Extract Phone Number:
+  // Step A: Handle phone label on its own line followed by phone number on next line (e.g. "رقم الموبايل:\n+20 104 ...")
+  for (let idx = 0; idx < rawLines.length; idx++) {
+    if (consumedLineIndices.has(idx) || phone) continue;
+    const line = rawLines[idx];
+    if (
+      /^(?:ت|تليفون|التليفون|هاتف|الهاتف|موبايل|الموبايل|رقم الموبايل|رقم التليفون|رقم الهاتف|جوال|الجوال|رقم التواصل|تواصل|واتساب)\s*[:：.-]?\s*$/i.test(
+        line
+      )
+    ) {
+      consumedLineIndices.add(idx);
+      if (idx + 1 < rawLines.length && !consumedLineIndices.has(idx + 1)) {
+        const nextNorm = normalizeDigits(rawLines[idx + 1]).replace(/[\s-]/g, '');
+        if (
+          /^(?:\+?20|0020|0)?1[01245]\d{8}$/.test(nextNorm) ||
+          /^(?:\+?966|00966|0)?5\d{8}$/.test(nextNorm) ||
+          /^0[23]\d{7,8}$/.test(nextNorm)
+        ) {
+          let cleanedPhone = nextNorm;
+          if (cleanedPhone.startsWith('+201')) cleanedPhone = '0' + cleanedPhone.slice(3);
+          else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12)
+            cleanedPhone = '0' + cleanedPhone.slice(2);
+          else if (cleanedPhone.startsWith('1') && cleanedPhone.length === 10)
+            cleanedPhone = '0' + cleanedPhone;
+          phone = cleanedPhone;
+          consumedLineIndices.add(idx + 1);
+        }
+      }
+      continue;
+    }
+  }
+
+  // Step B: Extract labeled phone line (e.g. "ت 01222123948" or "موبايل: 010...")
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx) || phone) return;
     const normLine = normalizeDigits(line);
 
     if (/^https?:\/\//i.test(normLine)) return;
-    if (/(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|المبلغ|حساب)\s*[:：-]/i.test(normLine)) return;
+    if (/(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|المبلغ|حساب)\s*[:：.-]/i.test(normLine)) return;
 
-    // Labeled phone line (even if "رقم الموبايل:" is followed by +20 104 4544066)
     const labeledPhoneMatch = normLine.match(
-      /(?:^|\b)(?:ت|تليفون|التليفون|هاتف|الهاتف|موبايل|الموبايل|رقم الموبايل|رقم التليفون|رقم الهاتف|جوال|الجوال|رقم التواصل|تواصل|واتساب)\s*[:：-]?\s*(\+?[\d\s-]{9,18}\d)/i
+      /(?:^|\b)(?:ت|تليفون|التليفون|هاتف|الهاتف|موبايل|الموبايل|رقم الموبايل|رقم التليفون|رقم الهاتف|جوال|الجوال|رقم التواصل|تواصل|واتساب)\s*[:：.-]?\s*(\+?[\d\s-]{9,18}\d)/i
     );
     if (labeledPhoneMatch) {
       let cleanedPhone = labeledPhoneMatch[1].replace(/[\s-]/g, '');
       if (cleanedPhone.startsWith('+201')) cleanedPhone = '0' + cleanedPhone.slice(3);
-      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12) cleanedPhone = '0' + cleanedPhone.slice(2);
+      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12)
+        cleanedPhone = '0' + cleanedPhone.slice(2);
+      else if (cleanedPhone.startsWith('1') && cleanedPhone.length === 10)
+        cleanedPhone = '0' + cleanedPhone;
       phone = cleanedPhone;
 
       const remainder = normLine
@@ -370,23 +402,25 @@ export function parseSingleOrderMessage(
     if (phoneMatchCompact) {
       let cleanedPhone = phoneMatchCompact[1];
       if (cleanedPhone.startsWith('+201')) cleanedPhone = '0' + cleanedPhone.slice(3);
-      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12) cleanedPhone = '0' + cleanedPhone.slice(2);
-      else if (cleanedPhone.startsWith('1') && cleanedPhone.length === 10) cleanedPhone = '0' + cleanedPhone;
+      else if (cleanedPhone.startsWith('201') && cleanedPhone.length === 12)
+        cleanedPhone = '0' + cleanedPhone.slice(2);
+      else if (cleanedPhone.startsWith('1') && cleanedPhone.length === 10)
+        cleanedPhone = '0' + cleanedPhone;
       phone = cleanedPhone;
       consumedLineIndices.add(idx);
     }
   });
 
-  // 4. Extract Total Price / Cost (الإجمالي / السعر)
+  // 4. Extract Total Price / Cost (الإجمالي / السعر / المبلغ)
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx)) return;
     const normLine = normalizeDigits(line);
 
     const labeledPriceMatch = line.match(
-      /^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|سعر الطلب|المبلغ|المطلوب|الحساب|التكلفة|تحصيل)\s*[:：-]?\s*(.+)$/i
+      /^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|سعر الطلب|المبلغ|المطلوب|الحساب|التكلفة|تحصيل)\s*[:：.-]?\s*(.+)$/i
     );
     if (labeledPriceMatch) {
-      totalPrice = labeledPriceMatch[1].trim();
+      totalPrice = labeledPriceMatch[1].replace(/^[:：.,\s-]+/, '').trim();
       consumedLineIndices.add(idx);
       return;
     }
@@ -400,13 +434,13 @@ export function parseSingleOrderMessage(
     }
   });
 
-  // 5. Extract Explicit Location ("الموقع:") & Explicit Address ("العنوان:"), including when the value is on the NEXT line!
+  // 5. Extract Explicit Location ("الموقع:") & Explicit Address ("العنوان:")
   for (let idx = 0; idx < rawLines.length; idx++) {
     if (consumedLineIndices.has(idx)) continue;
     const line = rawLines[idx];
 
-    // Check if line is ONLY "العنوان:" or "عنوان التوصيل:" and the actual address is on the next line
-    if (/^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل)\s*[:：-]?\s*$/i.test(line)) {
+    // Check if line is ONLY "العنوان:" and actual address is on next line(s)
+    if (/^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل)\s*[:：.-]?\s*$/i.test(line)) {
       consumedLineIndices.add(idx);
       if (idx + 1 < rawLines.length && !consumedLineIndices.has(idx + 1)) {
         mainAddressParts.push(rawLines[idx + 1].trim());
@@ -415,8 +449,8 @@ export function parseSingleOrderMessage(
       continue;
     }
 
-    // Check if line is ONLY "الموقع:" and the actual location is on the next line
-    if (/^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：-]?\s*$/i.test(line)) {
+    // Check if line is ONLY "الموقع:" and actual location is on next line
+    if (/^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：.-]?\s*$/i.test(line)) {
       consumedLineIndices.add(idx);
       if (idx + 1 < rawLines.length && !consumedLineIndices.has(idx + 1)) {
         const nextVal = rawLines[idx + 1].replace(/https?:\/\/\S+/gi, '').trim();
@@ -427,7 +461,7 @@ export function parseSingleOrderMessage(
     }
 
     const locationLabelMatch = line.match(
-      /^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：-]\s*(.+)$/i
+      /^(?:الموقع|لوكيشن|اللوكيشن|المكان على الخريطة)\s*[:：.-]\s*(.+)$/i
     );
     if (locationLabelMatch) {
       const locVal = locationLabelMatch[1].replace(/https?:\/\/\S+/gi, '').trim();
@@ -437,7 +471,7 @@ export function parseSingleOrderMessage(
     }
 
     const addressLabelMatch = line.match(
-      /^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل|المنطقة)\s*[:：-]\s*(.+)$/i
+      /^(?:العنوان|عنوان التوصيل|عنوان|مكان التوصيل|المنطقة)\s*[:：.-]\s*(.+)$/i
     );
     if (addressLabelMatch) {
       mainAddressParts.push(addressLabelMatch[1].trim());
@@ -445,12 +479,13 @@ export function parseSingleOrderMessage(
     }
   }
 
-  // 6. Extract Customer Name
+  // 6. Extract Customer Name from ANY line:
+  // Step A: Explicit "الاسم:" or "اسم العميل:" label
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx) || customerName) return;
 
     const labeledNameMatch = line.match(
-      /^(?:اسم العميل|العميل|الاسم|اسم المستلم|المستلم)\s*[:：-]\s*(.+)$/i
+      /^(?:اسم العميل|العميل|الاسم|اسم المستلم|المستلم)\s*[:：.-]\s*(.+)$/i
     );
     if (labeledNameMatch) {
       customerName = labeledNameMatch[1]
@@ -458,11 +493,15 @@ export function parseSingleOrderMessage(
         .replace(/[،,]+$/g, '')
         .trim();
       consumedLineIndices.add(idx);
-      return;
     }
+  });
+
+  // Step B: Arabic honorifics anywhere in unconsumed lines (e.g. "مدام رانيا متولي", "الاستاذ عمرو حلاوة", "الاستاذ سامي الجرايه")
+  rawLines.forEach((line, idx) => {
+    if (consumedLineIndices.has(idx) || customerName) return;
 
     const honorificMatch = line.match(
-      /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|الأستاذة|الاستاذة|مدام|الحاج|الحاجة|كابتن|دكتور|دكتورة|د\/|المهندس|مهندس|م\/)\s+(.+)$/i
+      /^(?:الأستاذ|الاستاذ|أستاذ|استاذ|الأستاذة|الاستاذة|أستاذة|استاذة|مدام|الحاج|الحاجة|كابتن|دكتور|دكتورة|د\/|المهندس|مهندس|م\/|الشيخ|سيد|السيد|سيدة|السيدة)\s+(.+)$/i
     );
     if (honorificMatch) {
       customerName = honorificMatch[1].replace(/[،,]+$/g, '').trim();
@@ -470,20 +509,21 @@ export function parseSingleOrderMessage(
     }
   });
 
-  // Fallback customer name from first unconsumed line if it looks like a person's name
+  // Step C: Fallback customer name from first unconsumed line that is not an address, item, or quantity
   if (!customerName) {
-    const firstUnconsumedIdx = rawLines.findIndex((_, i) => !consumedLineIndices.has(i));
-    if (firstUnconsumedIdx !== -1) {
-      const candidate = rawLines[firstUnconsumedIdx];
+    for (let i = 0; i < rawLines.length; i++) {
+      if (consumedLineIndices.has(i)) continue;
+      const candidate = rawLines[i];
       const normCandidate = normalizeDigits(candidate);
       const looksLikeAddressOrOrder =
-        /(?:شارع|ش |ميدان|عمارة|برج|الدور|شقة|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|حي |فيلا|كمبوند|بالم هيلز|المرحلة|بوابة|بوابه|تجمع|التجمع|قطامية|قطاميه|طلب|أوردر|اوردر|عدد|قطعة|تيشيرت|كرتونة|علبة|سابليه|فرسكا|افريسكا|دليفري)/i.test(
+        /(?:شارع|ش\.|ميدان|عمارة|برج|الدور|شقة|فرع|نادي|النادي|مول|بجوار|أمام|امام|خلف|تقاطع|مدينة|مدينه|حي |فيلا|كمبوند|كومبوند|بالم هيلز|ماونتن فيو|المرحلة|بوابة|بوابه|تجمع|التجمع|قطامية|قطاميه|طلب|أوردر|اوردر|عدد|قطعة|تيشيرت|كرتونة|علبة|علبه|سابليه|فرسكا|افريسكا|دليفري|إجمالي|اجمالي|سعر)/i.test(
           candidate
-        ) || /\d{3,}/.test(normCandidate);
+        ) || /\d{2,}/.test(normCandidate);
 
-      if (!looksLikeAddressOrOrder && candidate.split(/\s+/).length <= 5) {
+      if (!looksLikeAddressOrOrder && candidate.split(/\s+/).length <= 4) {
         customerName = candidate.replace(/[،,]+$/g, '').trim();
-        consumedLineIndices.add(firstUnconsumedIdx);
+        consumedLineIndices.add(i);
+        break;
       }
     }
   }
