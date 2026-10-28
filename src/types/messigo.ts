@@ -74,6 +74,7 @@ export interface DayRecord {
   id: string;
   dateKey: string; // YYYY-MM-DD
   title: string;
+  courierName?: string; // اسم المندوب
   createdAt: string;
   updatedAt: string;
   rawInputText: string;

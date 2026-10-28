@@ -15,6 +15,7 @@ import {
   Plus,
   Printer,
   Route,
+  User,
   X,
 } from 'lucide-react';
 import {
@@ -37,6 +38,8 @@ import {
   isOrderLocationReadyForRoute,
 } from './services/routingService';
 import {
+  createBlankDayRecord,
+  deleteDayRecordFromDb,
   formatArabicDateTitle,
   loadAllDaysAndActiveId,
   restoreBackupToDb,
@@ -52,6 +55,8 @@ import { InteractiveMapModal } from './components/InteractiveMapModal';
 import { OrderFormModal } from './components/OrderFormModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { RoutePdfModal } from './components/RoutePdfModal';
+import { ShareRouteModal } from './components/ShareRouteModal';
+import { decodeShareableRoute } from './services/shareService';
 
 type ActiveTab = 'input' | 'review' | 'route' | 'history' | 'backup';
 
@@ -118,9 +123,16 @@ export default function App() {
     day: DayRecord | null;
   }>({ isOpen: false, day: null });
 
+  // Share Route Modal State
+  const [shareModalState, setShareModalState] = useState<{
+    isOpen: boolean;
+    day: DayRecord | null;
+  }>({ isOpen: false, day: null });
+
   // Create New Order / Batch Modal State
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [newOrderTitleInput, setNewOrderTitleInput] = useState('');
+  const [newOrderCourierInput, setNewOrderCourierInput] = useState('');
 
   // Rename Day / Batch Modal State
   const [renameModalState, setRenameModalState] = useState<{
@@ -133,27 +145,104 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 4000);
+    }, 4500);
   };
 
-  // Load initial data from IndexedDB
+  // Load initial data from IndexedDB and handle shared delivery route deep link
   useEffect(() => {
     let mounted = true;
     loadAllDaysAndActiveId()
-      .then(({ days: loadedDays, activeDayId: loadedActiveId }) => {
+      .then(async ({ days: loadedDays, activeDayId: loadedActiveId }) => {
         if (!mounted) return;
-        setDays(loadedDays);
-        setActiveDayId(loadedActiveId);
-        setViewingDayId(loadedActiveId);
+
+        let allDays = loadedDays;
+        let activeId = loadedActiveId;
+        let viewingId = loadedActiveId;
+        let shouldOpenRouteTab = false;
+
+        // Check if opened with a shared route link (#share_route=... or ?share_route=...)
+        const rawHashOrSearch = window.location.hash || window.location.search;
+        if (rawHashOrSearch.includes('share_route=')) {
+          const sharedDay = decodeShareableRoute(rawHashOrSearch);
+          if (sharedDay) {
+            const exists = allDays.some((d) => d.id === sharedDay.id);
+            allDays = exists
+              ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
+              : [sharedDay, ...allDays];
+
+            await saveDayRecord(sharedDay);
+            activeId = sharedDay.id;
+            viewingId = sharedDay.id;
+            shouldOpenRouteTab = true;
+
+            // Clean up the URL hash
+            try {
+              window.history.replaceState(null, '', window.location.pathname);
+            } catch {
+              // ignore
+            }
+
+            setTimeout(() => {
+              showToast(
+                `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
+                  sharedDay.courierName || 'المندوب'
+                } بنجاح`
+              );
+            }, 300);
+          }
+        }
+
+        setDays(allDays);
+        setActiveDayId(activeId);
+        setViewingDayId(viewingId);
+        if (shouldOpenRouteTab) {
+          setActiveTab('route');
+        }
         setIsDbLoaded(true);
       })
       .catch((err) => {
         console.error('Failed to load IndexedDB:', err);
         setIsDbLoaded(true);
       });
+
     return () => {
       mounted = false;
     };
+  }, []);
+
+  // Listen to hashchange if user clicks a shared link while app is already running
+  useEffect(() => {
+    const handleHashChange = async () => {
+      const hash = window.location.hash;
+      if (hash.includes('share_route=')) {
+        const sharedDay = decodeShareableRoute(hash);
+        if (sharedDay) {
+          setDays((prev) => {
+            const exists = prev.some((d) => d.id === sharedDay.id);
+            return exists
+              ? prev.map((d) => (d.id === sharedDay.id ? sharedDay : d))
+              : [sharedDay, ...prev];
+          });
+          await saveDayRecord(sharedDay);
+          setActiveDayId(sharedDay.id);
+          setViewingDayId(sharedDay.id);
+          setActiveTab('route');
+          showToast(
+            `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
+              sharedDay.courierName || 'المندوب'
+            }`
+          );
+          try {
+            window.history.replaceState(null, '', window.location.pathname);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   // Currently viewed day record (either active today or an inspected historical day)
@@ -434,6 +523,7 @@ export default function App() {
   const handleOpenNewOrderModal = () => {
     const suggestedTitle = `أوردرات ${formatArabicDateTitle(new Date())}`;
     setNewOrderTitleInput(suggestedTitle);
+    setNewOrderCourierInput('');
     setIsNewOrderModalOpen(true);
   };
 
@@ -442,7 +532,8 @@ export default function App() {
     if (!activeDay) return;
 
     const chosenTitle = newOrderTitleInput.trim() || undefined;
-    const { archivedDay, newDay } = await startNewDayInDb(activeDay, chosenTitle);
+    const chosenCourier = newOrderCourierInput.trim() || undefined;
+    const { archivedDay, newDay } = await startNewDayInDb(activeDay, chosenTitle, chosenCourier);
     setDays((prev) => [
       newDay,
       ...prev.map((d) => (d.id === archivedDay.id ? archivedDay : d)),
@@ -477,7 +568,53 @@ export default function App() {
     showToast('تم تعديل مسمى الأوردر بنجاح.');
   };
 
-  // 14. Delete single order from historical or active day
+  // 14. Update Courier Name for a Day Record
+  const handleUpdateCourierName = async (dayId: string, courierName: string) => {
+    const targetDay = days.find((d) => d.id === dayId);
+    if (!targetDay) return;
+
+    const updatedDay: DayRecord = {
+      ...targetDay,
+      courierName: courierName.trim() || undefined,
+    };
+    await updateDayRecord(updatedDay);
+    showToast(courierName.trim() ? `تم حفظ اسم المندوب: ${courierName.trim()}` : 'تم إزالة اسم المندوب.');
+  };
+
+  // 15. Delete Entire Day Record (حذف السجل بالكامل)
+  const handleDeleteEntireDay = (dayId: string, dayTitle: string) => {
+    setConfirmModalState({
+      isOpen: true,
+      title: 'تأكيد حذف السجل بالكامل',
+      message: `هل أنت متأكد من مسح سجل «${dayTitle}» بالكامل بما يحتويه من أوردرات وبيانات؟ لا يمكن التراجع عن هذا الإجراء.`,
+      confirmLabel: 'نعم، احذف السجل بالكامل',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
+        await deleteDayRecordFromDb(dayId);
+
+        const remainingDays = days.filter((d) => d.id !== dayId);
+        if (remainingDays.length === 0) {
+          const brandNewDay = createBlankDayRecord();
+          await saveDayRecord(brandNewDay);
+          setDays([brandNewDay]);
+          setActiveDayId(brandNewDay.id);
+          setViewingDayId(brandNewDay.id);
+        } else {
+          setDays(remainingDays);
+          if (activeDayId === dayId) {
+            setActiveDayId(remainingDays[0].id);
+          }
+          if (viewingDayId === dayId) {
+            setViewingDayId(remainingDays[0].id);
+          }
+        }
+        showToast(`تم حذف سجل «${dayTitle}» بالكامل.`);
+      },
+    });
+  };
+
+  // 16. Delete single order from historical or active day
   const handleDeleteOrderFromDay = (
     dayId: string,
     orderId: string,
@@ -622,7 +759,7 @@ export default function App() {
                 : 'border-transparent hover:text-slate-900'
             }`}
           >
-            سجل الأيام ({days.length})
+            سجل الأوردرات ({days.length})
           </button>
           <button
             type="button"
@@ -685,6 +822,40 @@ export default function App() {
             </div>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">{currentDay.dateKey}</span>
+
+            {/* Courier Name Tab/Badge in Context Subheader */}
+            <span aria-hidden="true">·</span>
+            {currentDay.courierName?.trim() ? (
+              <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md font-bold">
+                <User className="w-3 h-3 text-amber-700" />
+                <span>المندوب: {currentDay.courierName.trim()}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const val = window.prompt('تعديل اسم المندوب لهذا الأوردر:', currentDay.courierName || '');
+                    if (val !== null) handleUpdateCourierName(currentDay.id, val);
+                  }}
+                  className="p-0.5 hover:text-amber-950 transition-colors"
+                  title="تعديل اسم المندوب"
+                >
+                  <Edit2 className="w-2.5 h-2.5" />
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  const val = window.prompt('أدخل اسم المندوب لهذا الأوردر:');
+                  if (val !== null && val.trim()) handleUpdateCourierName(currentDay.id, val.trim());
+                }}
+                className="inline-flex items-center gap-1 text-slate-500 hover:text-amber-800 hover:bg-amber-50 border border-dashed border-slate-300 rounded px-2 py-0.5 transition-colors"
+                title="إضافة اسم المندوب لهذا الأوردر"
+              >
+                <User className="w-3 h-3" />
+                <span>+ إضافة اسم المندوب</span>
+              </button>
+            )}
+
             <span aria-hidden="true">·</span>
             <span>
               الأوردرات المسجلة:{' '}
@@ -701,18 +872,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            {currentDay.orders.length > 0 && (
-              <button
-                type="button"
-                onClick={() => handleOpenPdfExport(currentDay)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 transition-colors shadow-2xs"
-                title="تصدير بيان الأوردرات PDF للطباعة"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>تصدير بيان PDF</span>
-              </button>
-            )}
-
             {isViewingHistoricalDay && (
               <button
                 type="button"
@@ -782,7 +941,7 @@ export default function App() {
             onRequestRecalculateRoute={handleRequestRecalculateRoute}
             onGoToReview={() => setActiveTab('review')}
             onReturnToActiveDay={() => setViewingDayId(activeDayId)}
-            onOpenPdfExport={() => handleOpenPdfExport(currentDay)}
+            onShareRoute={() => setShareModalState({ isOpen: true, day: currentDay })}
           />
         )}
 
@@ -802,8 +961,11 @@ export default function App() {
             }}
             onRequestStartNewDay={handleOpenNewOrderModal}
             onDeleteOrderFromDay={handleDeleteOrderFromDay}
+            onDeleteEntireDay={handleDeleteEntireDay}
             onRenameDay={handleOpenRenameModal}
+            onUpdateCourierName={handleUpdateCourierName}
             onExportDayPdf={(day) => handleOpenPdfExport(day)}
+            onShareDay={(day) => setShareModalState({ isOpen: true, day })}
           />
         )}
 
@@ -862,7 +1024,7 @@ export default function App() {
           }`}
         >
           <History className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">الأيام</span>
+          <span className="text-[10px] mt-0.5 whitespace-nowrap">الأوردرات</span>
         </button>
 
         <button
@@ -924,8 +1086,21 @@ export default function App() {
         onClose={() => setPdfModalState({ isOpen: false, day: null })}
         dayTitle={pdfModalState.day?.title || currentDay.title}
         dateKey={pdfModalState.day?.dateKey || currentDay.dateKey}
+        courierName={pdfModalState.day?.courierName || currentDay.courierName}
         orders={pdfModalState.day?.orders || currentDay.orders}
         route={pdfModalState.day?.calculatedRoute || currentDay.calculatedRoute || null}
+        onCopySuccess={(msg) => showToast(msg)}
+      />
+
+      {/* Share Delivery Route Modal (مشاركة مسار التوصيل مع المندوب) */}
+      <ShareRouteModal
+        isOpen={shareModalState.isOpen}
+        onClose={() => setShareModalState({ isOpen: false, day: null })}
+        day={shareModalState.day || currentDay}
+        onOpenRouteView={(dayId) => {
+          setViewingDayId(dayId);
+          setActiveTab('route');
+        }}
         onCopySuccess={(msg) => showToast(msg)}
       />
 
@@ -948,19 +1123,35 @@ export default function App() {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              سيتم حفظ جميع أوردرات اليوم الحالي بأمان في «سجل الأيام السابقة»، وبدء قائمة جديدة يمكنك تسميتها وتتبع أوردراتها ومسارها بشكل منفصل.
+              سيتم حفظ جميع أوردرات اليوم الحالي بأمان في «سجل الأوردرات»، وبدء أوردر جديد يحمل تاريخ اليوم تلقائيًا مع إمكانية تعيين اسم المندوب.
             </p>
 
+            {/* Order Title (Auto day/date with ability to edit) */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-700">
-                اسم الأوردر / الدفعة:
+                اسم الأوردر / الدفعة (تلقائي بالتاريخ):
               </label>
               <input
                 type="text"
                 value={newOrderTitleInput}
                 onChange={(e) => setNewOrderTitleInput(e.target.value)}
-                placeholder="مثال: أوردرات الشيخ زايد وأكتوبر، أو شحنات التجمع"
-                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500 font-medium text-slate-800"
+                placeholder="أوردرات اليوم..."
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-sky-500 font-medium text-slate-800"
+              />
+            </div>
+
+            {/* Courier Name Input */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-amber-600" />
+                <span>اسم المندوب (اختياري):</span>
+              </label>
+              <input
+                type="text"
+                value={newOrderCourierInput}
+                onChange={(e) => setNewOrderCourierInput(e.target.value)}
+                placeholder="مثال: أحمد مصطفى أو الكابتن محمد"
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-sky-500 font-medium text-slate-800"
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {

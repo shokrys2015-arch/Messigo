@@ -38,13 +38,14 @@ export function formatArabicDateTitle(date: Date = new Date()): string {
   }
 }
 
-export function createBlankDayRecord(customTitle?: string): DayRecord {
+export function createBlankDayRecord(customTitle?: string, courierName?: string): DayRecord {
   const now = new Date();
   const dateKey = now.toISOString().split('T')[0];
   return {
     id: `day_${now.getTime()}_${Math.random().toString(36).substring(2, 7)}`,
     dateKey,
     title: customTitle || `أوردرات ${formatArabicDateTitle(now)}`,
+    courierName: courierName?.trim() || undefined,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
     rawInputText: '',
@@ -90,6 +91,11 @@ export async function saveDayRecord(day: DayRecord): Promise<void> {
   await db.put(DAYS_STORE, updated);
 }
 
+export async function deleteDayRecordFromDb(dayId: string): Promise<void> {
+  const db = await getDb();
+  await db.delete(DAYS_STORE, dayId);
+}
+
 export async function setActiveDayIdInDb(dayId: string): Promise<void> {
   const db = await getDb();
   await db.put(META_STORE, dayId, 'activeDayId');
@@ -97,7 +103,8 @@ export async function setActiveDayIdInDb(dayId: string): Promise<void> {
 
 export async function startNewDayInDb(
   currentDay: DayRecord,
-  newDayTitle?: string
+  newDayTitle?: string,
+  courierName?: string
 ): Promise<{ archivedDay: DayRecord; newDay: DayRecord }> {
   const db = await getDb();
   const archivedDay: DayRecord = {
@@ -105,7 +112,7 @@ export async function startNewDayInDb(
     isArchived: true,
     updatedAt: new Date().toISOString(),
   };
-  const newDay = createBlankDayRecord(newDayTitle);
+  const newDay = createBlankDayRecord(newDayTitle, courierName);
 
   const tx = db.transaction([DAYS_STORE, META_STORE], 'readwrite');
   await tx.objectStore(DAYS_STORE).put(archivedDay);

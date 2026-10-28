@@ -10,6 +10,7 @@ import {
   Coins,
   CheckCircle2,
   Copy,
+  User,
 } from 'lucide-react';
 import { CalculatedRoute, DeliveryOrder } from '../types/messigo';
 import { formatDistanceArabic, formatDurationArabic } from '../services/routingService';
@@ -19,9 +20,20 @@ interface RoutePdfModalProps {
   onClose: () => void;
   dayTitle: string;
   dateKey: string;
+  courierName?: string;
   orders: DeliveryOrder[];
   route: CalculatedRoute | null;
   onCopySuccess?: (msg: string) => void;
+}
+
+export function parsePriceToNumber(priceStr: string | undefined): number {
+  if (!priceStr) return 0;
+  // Convert Eastern Arabic numerals (٠-٩) to Western (0-9)
+  const normalized = priceStr
+    .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString())
+    .replace(/[^\d.]/g, '');
+  const val = parseFloat(normalized);
+  return Number.isFinite(val) ? val : 0;
 }
 
 export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
@@ -29,6 +41,7 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
   onClose,
   dayTitle,
   dateKey,
+  courierName,
   orders,
   route,
   onCopySuccess,
@@ -52,11 +65,9 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
   const deliveredCount = orders.filter((o) => o.deliveryStatus === 'تم التسليم').length;
   const remainingCount = orders.length - deliveredCount;
 
-  // Calculate total monetary collection from prices
+  // Calculate total monetary collection from prices with Arabic numeral support
   const totalAmountNumber = orders.reduce((sum, o) => {
-    const raw = o.totalPrice.replace(/[^\d.]/g, '');
-    const num = parseFloat(raw);
-    return sum + (Number.isFinite(num) ? num : 0);
+    return sum + parsePriceToNumber(o.totalPrice);
   }, 0);
 
   const handlePrint = () => {
@@ -66,6 +77,9 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
   const handleCopyWhatsappManifest = () => {
     let manifestText = `📋 *بيان توزيع أوردرات: ${dayTitle}*\n`;
     manifestText += `📅 التاريخ: ${dateKey}\n`;
+    if (courierName?.trim()) {
+      manifestText += `🛵 اسم المندوب: ${courierName.trim()}\n`;
+    }
     if (route) {
       manifestText += `📍 نقطة البداية: ${route.startPoint.label}\n`;
       manifestText += `🚗 إجمالي المسافة: ${formatDistanceArabic(route.totalDistanceMeters)} | الوقت: ${formatDurationArabic(route.totalDurationSeconds)}\n`;
@@ -170,6 +184,15 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                   <Calendar className="w-3.5 h-3.5 text-sky-600" />
                   <span>تاريخ البيان: {dateKey}</span>
                 </span>
+                {courierName?.trim() && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="flex items-center gap-1 text-slate-900 font-bold bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md print:bg-transparent print:border-none print:p-0">
+                      <User className="w-3.5 h-3.5 text-amber-700" />
+                      <span>المندوب: {courierName.trim()}</span>
+                    </span>
+                  </>
+                )}
                 <span aria-hidden="true">·</span>
                 <span>
                   توقيت الاستخراج:{' '}
@@ -336,6 +359,27 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                     );
                   })}
                 </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-slate-900 bg-slate-100/90 text-slate-900 font-extrabold print:bg-slate-200">
+                    <td colSpan={4} className="py-3 px-3 text-right">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">إجمالي المطلوب تحصيله من العملاء:</span>
+                        <span className="text-xs text-slate-500 font-normal">
+                          (مجموع جميع أوردرات الرحلة - {orders.length} أوردر)
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-2 text-center font-mono text-sm tabular-nums text-sky-800 font-black border-x border-slate-300">
+                      {totalAmountNumber > 0 ? `${totalAmountNumber.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
+                    </td>
+                    <td className="py-3 px-2 text-center font-mono text-xs text-slate-700 tabular-nums">
+                      {route ? formatDistanceArabic(route.totalDistanceMeters) : '-'}
+                    </td>
+                    <td className="py-3 px-2 text-center text-[10px] text-slate-400 font-normal">
+                      -
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>

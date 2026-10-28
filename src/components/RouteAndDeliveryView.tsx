@@ -12,6 +12,7 @@ import {
   RefreshCw,
   RotateCcw,
   Route,
+  Share2,
   UserCheck,
 } from 'lucide-react';
 import { CalculatedRoute, DeliveryOrder } from '../types/messigo';
@@ -31,7 +32,7 @@ interface RouteAndDeliveryViewProps {
   onRequestRecalculateRoute: () => void;
   onGoToReview: () => void;
   onReturnToActiveDay?: () => void;
-  onOpenPdfExport?: () => void;
+  onShareRoute?: () => void;
 }
 
 export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
@@ -43,7 +44,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
   onRequestRecalculateRoute,
   onGoToReview,
   onReturnToActiveDay,
-  onOpenPdfExport,
+  onShareRoute,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -367,15 +368,15 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {onOpenPdfExport && (
+            {onShareRoute && (
               <button
                 type="button"
-                onClick={onOpenPdfExport}
-                className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-xs"
-                title="تصدير بيان الرحلة وخط السير كملف PDF للطباعة"
+                onClick={onShareRoute}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shadow-xs"
+                title="مشاركة مسار التوصيل مع المندوب"
               >
-                <Printer className="w-3.5 h-3.5" />
-                <span>تصدير بيان PDF</span>
+                <Share2 className="w-4 h-4 text-emerald-700" />
+                <span>مشاركة المسار</span>
               </button>
             )}
 
