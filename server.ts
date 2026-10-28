@@ -174,6 +174,15 @@ async function startServer() {
     }
   });
 
+  // Short URL direct path redirect /r/:id -> /?r=:id
+  app.get('/r/:id', (req, res) => {
+    const shortId = req.params.id;
+    if (shortId) {
+      return res.redirect(302, `/?r=${encodeURIComponent(shortId)}`);
+    }
+    return res.redirect(302, '/');
+  });
+
   // Retrieve a shared delivery route by short ID
   app.get('/api/routes/:id', (req, res) => {
     try {

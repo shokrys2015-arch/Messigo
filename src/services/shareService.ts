@@ -118,8 +118,8 @@ export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
     if (res.ok) {
       const data = await res.json();
       if (data?.shortId) {
-        const baseUrl = `${window.location.origin}${window.location.pathname}`;
-        return `${baseUrl}?r=${data.shortId}`;
+        const origin = window.location.origin.replace(/\/+$/, '');
+        return `${origin}/?r=${data.shortId}`;
       }
     }
   } catch (err) {
@@ -230,6 +230,8 @@ export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string
     ? `🛵 *المندوب:* ${day.courierName.trim()}\n`
     : '';
 
+  const cleanUrl = (shareUrl || '').trim();
+
   return (
     `🚚 *خط سير توصيل الأوردرات*\n` +
     `📦 *اسم الأوردر:* ${day.title}\n` +
@@ -237,7 +239,7 @@ export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string
     `📅 *التاريخ:* ${day.dateKey}\n` +
     `📋 *عدد الشحنات:* ${totalOrders} أوردر\n` +
     `💰 *إجمالي المطلوب تحصيله:* ${priceText}\n\n` +
-    `📍 *افتح مسار التوصيل واللوكيشنز مباشرة في البرنامج:*\n` +
-    `${shareUrl}`
+    `📍 *رابط مسار التوصيل واللوكيشنز للمندوب:*\n\n` +
+    `${cleanUrl}\n`
   );
 }

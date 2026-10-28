@@ -123,19 +123,75 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     }
   };
 
-  const handleOpenWhatsapp = () => {
-    if (!whatsappText) return;
-    const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
+  const [copiedText, setCopiedText] = useState(false);
+
+  const handleOpenWhatsapp = async () => {
+    let urlToUse = shortUrl;
+    if (!urlToUse || isGeneratingUrl) {
+      try {
+        setIsGeneratingUrl(true);
+        urlToUse = await generateShortRouteUrl(day);
+        setShortUrl(urlToUse);
+        setIsGeneratingUrl(false);
+      } catch (err) {
+        console.error('Failed to generate short route URL:', err);
+        urlToUse = generateShareableRouteUrl(day);
+      }
+    }
+
+    if (!urlToUse) return;
+
+    const message = buildWhatsappShareText(day, urlToUse);
+    // wa.me is the universal WhatsApp standard for web & mobile
+    const waUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
     window.open(waUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const handleNativeShare = async () => {
-    if (!navigator.share || !shortUrl) return;
+  const handleCopyWhatsappText = async () => {
+    let urlToUse = shortUrl;
+    if (!urlToUse || isGeneratingUrl) {
+      try {
+        urlToUse = await generateShortRouteUrl(day);
+        setShortUrl(urlToUse);
+      } catch {
+        urlToUse = generateShareableRouteUrl(day);
+      }
+    }
+    const message = buildWhatsappShareText(day, urlToUse);
     try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(message);
+      } else {
+        const input = document.createElement('textarea');
+        input.value = message;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+      }
+      setCopiedText(true);
+      if (onCopySuccess) {
+        onCopySuccess('تم نسخ رسالة الواتساب بالكامل مع الرابط المختصر!');
+      }
+      setTimeout(() => setCopiedText(false), 3000);
+    } catch (err) {
+      console.error('Failed to copy whatsapp message:', err);
+    }
+  };
+
+  const handleNativeShare = async () => {
+    let urlToUse = shortUrl;
+    if (!urlToUse) {
+      urlToUse = await generateShortRouteUrl(day);
+      setShortUrl(urlToUse);
+    }
+    if (!navigator.share || !urlToUse) return;
+    try {
+      const msg = buildWhatsappShareText(day, urlToUse);
       await navigator.share({
         title: `مسار توصيل: ${day.title}`,
-        text: whatsappText,
-        url: shortUrl,
+        text: msg,
+        url: urlToUse,
       });
     } catch (err) {
       // User cancelled or share failed silently
@@ -327,6 +383,29 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
                 )}
               </button>
             </div>
+            {/* Quick Button to copy entire WhatsApp message text */}
+            <button
+              type="button"
+              onClick={handleCopyWhatsappText}
+              disabled={isGeneratingUrl}
+              className={`w-full min-h-[38px] mt-1.5 px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-colors ${
+                copiedText
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+              }`}
+            >
+              {copiedText ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>تم نسخ نص رسالة الواتساب بالكامل!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 text-slate-500" />
+                  <span>نسخ نص رسالة الواتساب بالكامل (مع الرابط)</span>
+                </>
+              )}
+            </button>
           </div>
 
           {/* Action 3: Native Share (Mobile) */}

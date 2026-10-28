@@ -160,13 +160,19 @@ export default function App() {
         let viewingId = loadedActiveId;
         let shouldOpenRouteTab = false;
 
-        // Check if opened with a short route link (?r=... or #r=...)
+        // Check if opened with a short route link (?r=... or #r=... or /r/...)
         const urlParams = new URLSearchParams(window.location.search);
         let shortRouteId = urlParams.get('r');
         if (!shortRouteId && window.location.hash) {
           const hashMatch = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
           if (hashMatch && hashMatch[1]) {
             shortRouteId = hashMatch[1];
+          }
+        }
+        if (!shortRouteId && window.location.pathname.startsWith('/r/')) {
+          const pathMatch = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
+          if (pathMatch && pathMatch[1]) {
+            shortRouteId = pathMatch[1];
           }
         }
 
@@ -185,7 +191,7 @@ export default function App() {
               shouldOpenRouteTab = true;
 
               try {
-                window.history.replaceState(null, '', window.location.pathname);
+                window.history.replaceState(null, '', '/');
               } catch {
                 // ignore
               }
@@ -255,11 +261,17 @@ export default function App() {
   // Listen to hashchange or popstate if user clicks a shared link while app is already open
   useEffect(() => {
     const handleUrlChange = async () => {
-      // Check for short code first
+      // Check for short code first (?r=... or #r=... or /r/...)
       const searchParams = new URLSearchParams(window.location.search);
       let shortCode = searchParams.get('r');
       if (!shortCode && window.location.hash) {
         const match = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          shortCode = match[1];
+        }
+      }
+      if (!shortCode && window.location.pathname.startsWith('/r/')) {
+        const match = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
         if (match && match[1]) {
           shortCode = match[1];
         }
@@ -285,7 +297,7 @@ export default function App() {
               }`
             );
             try {
-              window.history.replaceState(null, '', window.location.pathname);
+              window.history.replaceState(null, '', '/');
             } catch {
               // ignore
             }
