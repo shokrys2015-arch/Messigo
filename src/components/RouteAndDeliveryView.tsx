@@ -8,6 +8,7 @@ import {
   MapPin,
   Navigation,
   Phone,
+  Printer,
   RefreshCw,
   RotateCcw,
   Route,
@@ -30,6 +31,7 @@ interface RouteAndDeliveryViewProps {
   onRequestRecalculateRoute: () => void;
   onGoToReview: () => void;
   onReturnToActiveDay?: () => void;
+  onOpenPdfExport?: () => void;
 }
 
 export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
@@ -41,6 +43,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
   onRequestRecalculateRoute,
   onGoToReview,
   onReturnToActiveDay,
+  onOpenPdfExport,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -363,16 +366,30 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
             <p className="text-xs text-slate-500 mt-0.5">{route.algorithmNote}</p>
           </div>
 
-          {!isHistoricalDay && (
-            <button
-              type="button"
-              onClick={onRequestRecalculateRoute}
-              className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-sky-600" />
-              <span>إعادة حساب المسار</span>
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {onOpenPdfExport && (
+              <button
+                type="button"
+                onClick={onOpenPdfExport}
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-xs"
+                title="تصدير بيان الرحلة وخط السير كملف PDF للطباعة"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>تصدير بيان PDF</span>
+              </button>
+            )}
+
+            {!isHistoricalDay && (
+              <button
+                type="button"
+                onClick={onRequestRecalculateRoute}
+                className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-sky-600" />
+                <span>إعادة حساب المسار</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

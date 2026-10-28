@@ -8,9 +8,14 @@ import {
   CheckCircle2,
   ClipboardList,
   Database,
+  Edit2,
+  FileText,
   History,
   MessageSquarePlus,
+  Plus,
+  Printer,
   Route,
+  X,
 } from 'lucide-react';
 import {
   Coordinates,
@@ -32,6 +37,7 @@ import {
   isOrderLocationReadyForRoute,
 } from './services/routingService';
 import {
+  formatArabicDateTitle,
   loadAllDaysAndActiveId,
   restoreBackupToDb,
   saveDayRecord,
@@ -45,6 +51,7 @@ import { BackupView } from './components/BackupView';
 import { InteractiveMapModal } from './components/InteractiveMapModal';
 import { OrderFormModal } from './components/OrderFormModal';
 import { ConfirmModal } from './components/ConfirmModal';
+import { RoutePdfModal } from './components/RoutePdfModal';
 
 type ActiveTab = 'input' | 'review' | 'route' | 'history' | 'backup';
 
@@ -104,6 +111,23 @@ export default function App() {
     variant: 'primary',
     onConfirm: () => {},
   });
+
+  // PDF Export Modal State
+  const [pdfModalState, setPdfModalState] = useState<{
+    isOpen: boolean;
+    day: DayRecord | null;
+  }>({ isOpen: false, day: null });
+
+  // Create New Order / Batch Modal State
+  const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
+  const [newOrderTitleInput, setNewOrderTitleInput] = useState('');
+
+  // Rename Day / Batch Modal State
+  const [renameModalState, setRenameModalState] = useState<{
+    isOpen: boolean;
+    dayId: string;
+    title: string;
+  }>({ isOpen: false, dayId: '', title: '' });
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -399,33 +423,93 @@ export default function App() {
     showToast(delivered ? 'تم تسجيل تسليم الأوردر وحفظ الحالة.' : 'تمت إعادة الأوردر إلى قيد الانتظار.');
   };
 
-  // 11. Start New Day (with Confirmation)
-  const handleRequestStartNewDay = () => {
+  // 11. PDF Export Modal Trigger
+  const handleOpenPdfExport = (targetDay?: DayRecord) => {
+    const dayToExport = targetDay || currentDay;
+    if (!dayToExport) return;
+    setPdfModalState({ isOpen: true, day: dayToExport });
+  };
+
+  // 12. Create New Order / Batch (عمل أوردر جديد)
+  const handleOpenNewOrderModal = () => {
+    const suggestedTitle = `أوردرات ${formatArabicDateTitle(new Date())}`;
+    setNewOrderTitleInput(suggestedTitle);
+    setIsNewOrderModalOpen(true);
+  };
+
+  const handleConfirmCreateNewOrder = async () => {
+    const activeDay = days.find((d) => d.id === activeDayId) || currentDay;
+    if (!activeDay) return;
+
+    const chosenTitle = newOrderTitleInput.trim() || undefined;
+    const { archivedDay, newDay } = await startNewDayInDb(activeDay, chosenTitle);
+    setDays((prev) => [
+      newDay,
+      ...prev.map((d) => (d.id === archivedDay.id ? archivedDay : d)),
+    ]);
+    setActiveDayId(newDay.id);
+    setViewingDayId(newDay.id);
+    setIsNewOrderModalOpen(false);
+    setActiveTab('input');
+    showToast(`تم إنشاء «${newDay.title}» وبدء قائمة أوردرات جديدة.`);
+  };
+
+  // 13. Rename Day / Order Batch
+  const handleOpenRenameModal = (dayId: string, currentTitle: string) => {
+    setRenameModalState({
+      isOpen: true,
+      dayId,
+      title: currentTitle,
+    });
+  };
+
+  const handleConfirmRename = async () => {
+    if (!renameModalState.dayId || !renameModalState.title.trim()) return;
+    const targetDay = days.find((d) => d.id === renameModalState.dayId);
+    if (!targetDay) return;
+
+    const updatedDay: DayRecord = {
+      ...targetDay,
+      title: renameModalState.title.trim(),
+    };
+    await updateDayRecord(updatedDay);
+    setRenameModalState({ isOpen: false, dayId: '', title: '' });
+    showToast('تم تعديل مسمى الأوردر بنجاح.');
+  };
+
+  // 14. Delete single order from historical or active day
+  const handleDeleteOrderFromDay = (
+    dayId: string,
+    orderId: string,
+    customerName: string
+  ) => {
     setConfirmModalState({
       isOpen: true,
-      title: 'بدء يوم عمل جديد',
-      message:
-        'هل تريد بدء يوم جديد؟ سيتم حفظ جميع أوردرات ومسار اليوم الحالي في «سجل الأيام السابقة» دون حذف أي بيانات، وفتح قائمة أوردرات جديدة لليوم الجديد.',
-      confirmLabel: 'ابدأ يوم جديد الآن',
-      variant: 'primary',
+      title: 'تأكيد حذف الأوردر',
+      message: `هل أنت متأكد من حذف أوردر العميل «${
+        customerName || 'بدون اسم'
+      }» من سجل هذا اليوم؟ لا يمكن التراجع عن هذا الإجراء.`,
+      confirmLabel: 'نعم، احذف الأوردر',
+      variant: 'danger',
       onConfirm: async () => {
         setConfirmModalState((prev) => ({ ...prev, isOpen: false }));
-        const activeDay = days.find((d) => d.id === activeDayId) || currentDay;
-        if (!activeDay) return;
-        const { archivedDay, newDay } = await startNewDayInDb(activeDay);
-        setDays((prev) => [
-          newDay,
-          ...prev.map((d) => (d.id === archivedDay.id ? archivedDay : d)),
-        ]);
-        setActiveDayId(newDay.id);
-        setViewingDayId(newDay.id);
-        setActiveTab('input');
-        showToast('تم حفظ اليوم السابق وبدء يوم جديد بنجاح.');
+        const targetDay = days.find((d) => d.id === dayId);
+        if (!targetDay) return;
+
+        const remainingOrders = recalculateOrdersLocationStatus(
+          targetDay.orders.filter((o) => o.id !== orderId)
+        );
+        const updatedDay: DayRecord = {
+          ...targetDay,
+          orders: remainingOrders,
+        };
+        await updateDayRecord(updatedDay);
+        showToast('تم حذف الأوردر من سجل اليوم بنجاح.');
       },
     });
   };
 
-  // 12. Export Backup JSON
+  // 15. Export Backup JSON
   const handleExportBackup = () => {
     const payload: MessigoBackupFile = {
       app: 'Messigo',
@@ -557,10 +641,11 @@ export default function App() {
         <div className="flex items-center shrink-0">
           <button
             type="button"
-            onClick={handleRequestStartNewDay}
-            className="min-h-[40px] px-4 py-2 text-xs sm:text-sm font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-2xs"
+            onClick={handleOpenNewOrderModal}
+            className="min-h-[40px] px-4 py-2 text-xs sm:text-sm font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-2xs flex items-center gap-1.5"
           >
-            ابدأ يوم جديد
+            <Plus className="w-4 h-4 shrink-0" />
+            <span>عمل أوردر جديد</span>
           </button>
         </div>
       </header>
@@ -585,9 +670,19 @@ export default function App() {
         )}
 
         {/* Active Day Context Subheader */}
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 border-b border-slate-200/80 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600 border-b border-slate-200/80 pb-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-bold text-slate-900">{currentDay.title}</span>
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-slate-900 text-sm sm:text-base">{currentDay.title}</span>
+              <button
+                type="button"
+                onClick={() => handleOpenRenameModal(currentDay.id, currentDay.title)}
+                title="تعديل اسم الأوردر"
+                className="p-1 text-slate-400 hover:text-sky-600 rounded hover:bg-slate-100 transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">{currentDay.dateKey}</span>
             <span aria-hidden="true">·</span>
@@ -605,18 +700,32 @@ export default function App() {
             )}
           </div>
 
-          {isViewingHistoricalDay && (
-            <button
-              type="button"
-              onClick={() => {
-                setViewingDayId(activeDayId);
-                showToast('تمت العودة إلى اليوم الحالي النشط.');
-              }}
-              className="text-sky-700 font-bold hover:underline"
-            >
-              العودة إلى اليوم الحالي النشط ←
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {currentDay.orders.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleOpenPdfExport(currentDay)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 transition-colors shadow-2xs"
+                title="تصدير بيان الأوردرات PDF للطباعة"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>تصدير بيان PDF</span>
+              </button>
+            )}
+
+            {isViewingHistoricalDay && (
+              <button
+                type="button"
+                onClick={() => {
+                  setViewingDayId(activeDayId);
+                  showToast('تمت العودة إلى اليوم الحالي النشط.');
+                }}
+                className="text-sky-700 font-bold hover:underline ml-2"
+              >
+                العودة إلى اليوم الحالي النشط ←
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Active Screen View */}
@@ -673,6 +782,7 @@ export default function App() {
             onRequestRecalculateRoute={handleRequestRecalculateRoute}
             onGoToReview={() => setActiveTab('review')}
             onReturnToActiveDay={() => setViewingDayId(activeDayId)}
+            onOpenPdfExport={() => handleOpenPdfExport(currentDay)}
           />
         )}
 
@@ -690,7 +800,10 @@ export default function App() {
                 setActiveTab('review');
               }
             }}
-            onRequestStartNewDay={handleRequestStartNewDay}
+            onRequestStartNewDay={handleOpenNewOrderModal}
+            onDeleteOrderFromDay={handleDeleteOrderFromDay}
+            onRenameDay={handleOpenRenameModal}
+            onExportDayPdf={(day) => handleOpenPdfExport(day)}
           />
         )}
 
@@ -804,6 +917,139 @@ export default function App() {
         onConfirm={confirmModalState.onConfirm}
         onCancel={() => setConfirmModalState((prev) => ({ ...prev, isOpen: false }))}
       />
+
+      {/* PDF Export Manifesto Modal */}
+      <RoutePdfModal
+        isOpen={pdfModalState.isOpen}
+        onClose={() => setPdfModalState({ isOpen: false, day: null })}
+        dayTitle={pdfModalState.day?.title || currentDay.title}
+        dateKey={pdfModalState.day?.dateKey || currentDay.dateKey}
+        orders={pdfModalState.day?.orders || currentDay.orders}
+        route={pdfModalState.day?.calculatedRoute || currentDay.calculatedRoute || null}
+        onCopySuccess={(msg) => showToast(msg)}
+      />
+
+      {/* Create New Order / Batch Modal */}
+      {isNewOrderModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-sky-700">
+                <Plus className="w-5 h-5" />
+                <h3 className="font-extrabold text-base text-slate-900">عمل أوردر جديد</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNewOrderModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              سيتم حفظ جميع أوردرات اليوم الحالي بأمان في «سجل الأيام السابقة»، وبدء قائمة جديدة يمكنك تسميتها وتتبع أوردراتها ومسارها بشكل منفصل.
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">
+                اسم الأوردر / الدفعة:
+              </label>
+              <input
+                type="text"
+                value={newOrderTitleInput}
+                onChange={(e) => setNewOrderTitleInput(e.target.value)}
+                placeholder="مثال: أوردرات الشيخ زايد وأكتوبر، أو شحنات التجمع"
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500 font-medium text-slate-800"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleConfirmCreateNewOrder();
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsNewOrderModalOpen(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCreateNewOrder}
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition-colors shadow-2xs"
+              >
+                إنشاء وبدء الأوردر
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Modal */}
+      {renameModalState.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-sky-700">
+                <Edit2 className="w-5 h-5" />
+                <h3 className="font-extrabold text-base text-slate-900">تعديل مسمى الأوردر</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRenameModalState({ isOpen: false, dayId: '', title: '' })}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">
+                المسمى الجديد:
+              </label>
+              <input
+                type="text"
+                value={renameModalState.title}
+                onChange={(e) =>
+                  setRenameModalState((prev) => ({ ...prev, title: e.target.value }))
+                }
+                placeholder="أدخل مسمى الأوردر الجديد..."
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500 font-medium text-slate-800"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleConfirmRename();
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setRenameModalState({ isOpen: false, dayId: '', title: '' })}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRename}
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition-colors shadow-2xs"
+              >
+                حفظ التعديل
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

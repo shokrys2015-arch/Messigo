@@ -137,9 +137,7 @@ async function startServer() {
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
-        contents: `أنت خبير جغرافي متخصص في عناوين وخرائط جمهورية مصر العربية فقط.
+      const promptText = `أنت خبير جغرافي فائق الذكاء متخصص في عناوين وخرائط جمهورية مصر العربية فقط.
 حدد الإحداثيات الجغرافية الدقيقة (latitude, longitude) داخل مصر والاسم الرسمي الواضح بالعربية لهذا العنوان أو المكان:
 "${rawQuery}"
 
@@ -149,31 +147,55 @@ async function startServer() {
    - "بالم هيلز قطامية" أو "بالم هيلز التجمع" يقع في التجمع الخامس بالقاهرة الجديدة (حوالي 30.0086, 31.4884)، بينما "بالم هيلز أكتوبر" أو "بالم هيلز المرحلة 5" بدون ذكر التجمع/القطامية يقع في 6 أكتوبر بالجيزة (حوالي 29.9964, 31.0286).
    - "غرب الجولف" في التجمع الثالث/الخامس بالقاهرة الجديدة يقع عند (حوالي 29.9985, 31.4125).
    - "سيتي سنتر مدينة نصر" (مكرم عبيد) يقع عند (30.0683, 31.3447)، بينما "سيتي سنتر ألماظة" يقع عند (30.0819, 31.3644).
-3. إذا كان البحث عامًا أو يحتمل أكثر من فرع/منطقة داخل مصر، أرجع حتى 3 نتائج مرتبة حسب الأقرب للعنوان المكتوب.`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              results: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    lat: { type: Type.NUMBER },
-                    lng: { type: Type.NUMBER },
-                    displayName: { type: Type.STRING },
-                  },
-                  required: ['lat', 'lng', 'displayName'],
+3. إذا كان البحث عامًا أو يحتمل أكثر من فرع/منطقة داخل مصر، أرجع حتى 3 نتائج مرتبة حسب الأقرب للعنوان المكتوب.`;
+
+      const genConfig = {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            results: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  lat: { type: Type.NUMBER },
+                  lng: { type: Type.NUMBER },
+                  displayName: { type: Type.STRING },
                 },
+                required: ['lat', 'lng', 'displayName'],
               },
             },
-            required: ['results'],
           },
+          required: ['results'],
         },
-      });
+      };
 
-      const parsed = JSON.parse(response.text || '{"results":[]}');
+      // Try premier Pro model first (gemini-2.5-pro), falling back gracefully to fast flash models
+      let responseText = '';
+      const candidateModels = [
+        'gemini-2.5-pro',
+        'gemini-3.8-flash',
+        'gemini-3.1-flash-lite-preview',
+      ];
+
+      for (const modelName of candidateModels) {
+        try {
+          const resp = await ai.models.generateContent({
+            model: modelName,
+            contents: promptText,
+            config: genConfig,
+          });
+          if (resp.text) {
+            responseText = resp.text;
+            break;
+          }
+        } catch {
+          // Continue to next candidate model if quota or timeout occurs
+        }
+      }
+
+      const parsed = JSON.parse(responseText || '{"results":[]}');
       const rawList = Array.isArray(parsed?.results) ? parsed.results : [];
 
       const results: EgyptGeocodePlaceResult[] = [];
