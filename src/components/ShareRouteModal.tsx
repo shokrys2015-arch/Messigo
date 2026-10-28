@@ -40,6 +40,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   onCopySuccess,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
   const [shortUrl, setShortUrl] = useState<string>('');
   const [isGeneratingUrl, setIsGeneratingUrl] = useState<boolean>(true);
 
@@ -122,8 +123,6 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
       console.error('Failed to copy share URL:', err);
     }
   };
-
-  const [copiedText, setCopiedText] = useState(false);
 
   const handleOpenWhatsapp = async () => {
     let urlToUse = shortUrl;
