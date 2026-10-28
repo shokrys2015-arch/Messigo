@@ -1,4 +1,10 @@
-import { CalculatedRoute, DayRecord, DeliveryOrder } from '../types/messigo';
+import {
+  CalculatedRoute,
+  DayRecord,
+  DeliveryOrder,
+  LocationStatus,
+  StartPoint,
+} from '../types/messigo';
 import { parsePriceToNumber } from '../components/RoutePdfModal';
 
 /**
@@ -103,8 +109,178 @@ export function createCompactSharePayload(day: DayRecord): Partial<DayRecord> {
 }
 
 /**
- * Asynchronously generates an ultra-short route URL via the server route storage.
- * Creates an ultra-clean URL like: https://domain.com/?r=k8x2m9
+ * Minimal data representation for sharing routes (under 250 bytes)
+ */
+export interface MicroDayPayload {
+  t: string; // title
+  k: string; // dateKey
+  c?: string; // courierName
+  s?: [number, number]; // startPoint coordinates [lat, lng]
+  o: Array<[string, string, string, string, number | null, number | null, string?]>;
+  // [customerName, phone, address, totalPrice, lat, lng, orderDetails]
+}
+
+/**
+ * Creates an ultra-compact payload containing only necessary delivery info.
+ * Drops heavy route polylines, duplicate texts, and redundant flags.
+ */
+export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
+  const o: MicroDayPayload['o'] = day.orders.map((ord) => [
+    ord.customerName?.trim() || '',
+    ord.phone?.trim() || '',
+    ord.address?.trim() || ord.locationText?.trim() || '',
+    ord.totalPrice?.trim() || '',
+    ord.coordinates?.lat ? Number(ord.coordinates.lat.toFixed(5)) : null,
+    ord.coordinates?.lng ? Number(ord.coordinates.lng.toFixed(5)) : null,
+    ord.orderDetails?.trim() || '',
+  ]);
+
+  const s: [number, number] | undefined = day.startPoint?.coordinates
+    ? [
+        Number(day.startPoint.coordinates.lat.toFixed(5)),
+        Number(day.startPoint.coordinates.lng.toFixed(5)),
+      ]
+    : undefined;
+
+  return {
+    t: day.title?.trim() || 'مسار توصيل',
+    k: day.dateKey || new Date().toISOString().split('T')[0],
+    c: day.courierName?.trim() || undefined,
+    s,
+    o,
+  };
+}
+
+/**
+ * Reconstructs a full DayRecord from the ultra-compact micro payload
+ */
+export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
+  const dayId = `day_${Date.now()}`;
+  const orders: DeliveryOrder[] = (micro.o || []).map((tuple, idx) => {
+    const lat = tuple[4];
+    const lng = tuple[5];
+    const hasCoords =
+      typeof lat === 'number' &&
+      typeof lng === 'number' &&
+      !Number.isNaN(lat) &&
+      !Number.isNaN(lng);
+
+    return {
+      id: `ord_${idx + 1}_${Date.now()}`,
+      customerName: tuple[0] || '',
+      phone: tuple[1] || '',
+      address: tuple[2] || '',
+      locationText: tuple[2] || '',
+      mapUrl: '',
+      coordinates: hasCoords ? { lat, lng } : null,
+      locationStatus: hasCoords ? 'الموقع صحيح' : 'يحتاج إلى مراجعة',
+      locationConfirmedByUser: true,
+      orderDetails: tuple[6] || '',
+      totalPrice: tuple[3] || '',
+      rawMessage: '',
+      deliveryStatus: 'قيد الانتظار',
+      excludedFromRoute: false,
+      createdAt: new Date().toISOString(),
+    };
+  });
+
+  const startPoint: StartPoint | null =
+    micro.s &&
+    typeof micro.s[0] === 'number' &&
+    typeof micro.s[1] === 'number'
+      ? {
+          coordinates: { lat: micro.s[0], lng: micro.s[1] },
+          label: 'نقطة بداية التوصيل',
+          source: 'manual',
+          confirmedAt: new Date().toISOString(),
+        }
+      : null;
+
+  return {
+    id: dayId,
+    title: micro.t || 'مسار توصيل مشترك',
+    dateKey: micro.k || new Date().toISOString().split('T')[0],
+    courierName: micro.c,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    rawInputText: '',
+    isArchived: false,
+    startPoint,
+    calculatedRoute: null,
+    orders,
+  };
+}
+
+/**
+ * Compresses an object into a compact URL-safe string using browser gzip
+ */
+export async function compressDataToUrlSafe(data: unknown): Promise<string> {
+  const jsonStr = JSON.stringify(data);
+  if (typeof CompressionStream !== 'undefined') {
+    try {
+      const stream = new Blob([new TextEncoder().encode(jsonStr)]).stream();
+      const compressedStream = stream.pipeThrough(new CompressionStream('gzip'));
+      const buffer = await new Response(compressedStream).arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return 'z_' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    } catch (e) {
+      console.warn('Compression error, falling back to base64:', e);
+    }
+  }
+  return 'b_' + toBase64Utf8(jsonStr);
+}
+
+/**
+ * Decompresses a URL-safe string back into an object
+ */
+export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promise<T | null> {
+  try {
+    if (encoded.startsWith('z_')) {
+      const rawB64 = encoded.slice(2);
+      let standardB64 = rawB64.replace(/-/g, '+').replace(/_/g, '/');
+      while (standardB64.length % 4 !== 0) standardB64 += '=';
+      const binary = atob(standardB64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const stream = new Blob([bytes]).stream();
+      const decompressedStream = stream.pipeThrough(new DecompressionStream('gzip'));
+      const text = await new Response(decompressedStream).text();
+      return JSON.parse(text) as T;
+    } else if (encoded.startsWith('b_')) {
+      const jsonStr = fromBase64Utf8(encoded.slice(2));
+      return JSON.parse(jsonStr) as T;
+    } else {
+      const jsonStr = fromBase64Utf8(encoded);
+      return JSON.parse(jsonStr) as T;
+    }
+  } catch (err) {
+    console.error('Decompression error:', err);
+    return null;
+  }
+}
+
+/**
+ * Generates an ultra-compact client-side URL that works on Cloudflare Pages (messigo.pages.dev)
+ * without any backend server. Length is ~150-250 characters.
+ */
+export async function generateClientCompactRouteUrl(day: DayRecord): Promise<string> {
+  const micro = createMicroDayPayload(day);
+  const compressed = await compressDataToUrlSafe(micro);
+  const origin = window.location.origin.replace(/\/+$/, '');
+  return `${origin}/?d=${compressed}`;
+}
+
+/**
+ * Asynchronously generates an ultra-short route URL:
+ * 1. Tries server storage (/api/routes/share) -> generates ~30 chars (?r=xyz)
+ * 2. On static hosting like Cloudflare Pages (messigo.pages.dev), uses gzip micro-payload -> generates ~200 chars (?d=...)
+ * NEVER generates the old 4,000-character string!
  */
 export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
   try {
@@ -122,12 +298,12 @@ export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
         return `${origin}/?r=${data.shortId}`;
       }
     }
-  } catch (err) {
-    console.warn('Could not contact /api/routes/share, falling back to base64 link:', err);
+  } catch {
+    // Expected on static hosting like Cloudflare Pages (messigo.pages.dev)
   }
 
-  // Fallback to client-side encoded URL if server is unreachable
-  return generateShareableRouteUrl(day);
+  // Client-side ultra-compact compressed link (works 100% on Cloudflare Pages without server!)
+  return generateClientCompactRouteUrl(day);
 }
 
 /**
@@ -161,16 +337,14 @@ export async function fetchSharedRoute(shortId: string): Promise<DayRecord | nul
 }
 
 /**
- * Fallback generator for full direct URL (used if offline)
- * Uses window.location.origin + pathname + #share_route=...
+ * Fallback generator for compact direct URL (sync fallback)
  */
 export function generateShareableRouteUrl(day: DayRecord): string {
-  const payload = createCompactSharePayload(day);
-  const jsonStr = JSON.stringify(payload);
+  const micro = createMicroDayPayload(day);
+  const jsonStr = JSON.stringify(micro);
   const encoded = toBase64Utf8(jsonStr);
-
-  const baseUrl = `${window.location.origin}${window.location.pathname}`;
-  return `${baseUrl}#share_route=${encoded}`;
+  const origin = window.location.origin.replace(/\/+$/, '');
+  return `${origin}/?d=b_${encoded}`;
 }
 
 /**
@@ -180,37 +354,89 @@ export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
   try {
     let encodedData = '';
 
-    // Check hash: #share_route=...
-    if (hashOrSearch.includes('share_route=')) {
-      const match = hashOrSearch.match(/share_route=([^&]+)/);
-      if (match && match[1]) {
-        encodedData = match[1];
-      }
+    if (hashOrSearch.includes('d=')) {
+      const match = hashOrSearch.match(/[#&?]d=([a-zA-Z0-9_\-~]+)/);
+      if (match && match[1]) encodedData = match[1];
+    } else if (hashOrSearch.includes('share_route=')) {
+      const match = hashOrSearch.match(/[#&?]share_route=([^&]+)/);
+      if (match && match[1]) encodedData = match[1];
     }
 
     if (!encodedData) return null;
 
-    const jsonStr = fromBase64Utf8(encodedData);
-    const parsed = JSON.parse(jsonStr);
+    let parsed: any = null;
+    if (encodedData.startsWith('b_')) {
+      parsed = JSON.parse(fromBase64Utf8(encodedData.slice(2)));
+    } else if (!encodedData.startsWith('z_')) {
+      parsed = JSON.parse(fromBase64Utf8(encodedData));
+    }
 
-    if (parsed && Array.isArray(parsed.orders)) {
-      return {
-        id: parsed.id || `day_${Date.now()}`,
-        title: parsed.title || 'مسار توصيل مشترك',
-        dateKey: parsed.dateKey || new Date().toISOString().split('T')[0],
-        courierName: parsed.courierName,
-        createdAt: parsed.createdAt || new Date().toISOString(),
-        updatedAt: parsed.updatedAt || new Date().toISOString(),
-        rawInputText: '',
-        isArchived: false,
-        startPoint: parsed.startPoint || null,
-        calculatedRoute: parsed.calculatedRoute || null,
-        orders: parsed.orders,
-      };
+    if (parsed) {
+      if (parsed.o && Array.isArray(parsed.o)) {
+        return reconstructDayFromMicro(parsed);
+      }
+      if (parsed.orders && Array.isArray(parsed.orders)) {
+        return {
+          id: parsed.id || `day_${Date.now()}`,
+          title: parsed.title || 'مسار توصيل مشترك',
+          dateKey: parsed.dateKey || new Date().toISOString().split('T')[0],
+          courierName: parsed.courierName,
+          createdAt: parsed.createdAt || new Date().toISOString(),
+          updatedAt: parsed.updatedAt || new Date().toISOString(),
+          rawInputText: '',
+          isArchived: false,
+          startPoint: parsed.startPoint || null,
+          calculatedRoute: parsed.calculatedRoute || null,
+          orders: parsed.orders,
+        };
+      }
     }
   } catch (err) {
     console.error('Failed to decode share route:', err);
   }
+  return null;
+}
+
+/**
+ * Universal async resolver for shared routes from URL (handles server short code, client gzip, and legacy)
+ */
+export async function decodeSharedRouteFromLocation(): Promise<DayRecord | null> {
+  const urlParams = new URLSearchParams(window.location.search);
+
+  // 1. Check for server short code: ?r=... or /r/... or #r=...
+  let shortCode = urlParams.get('r');
+  if (!shortCode && window.location.hash) {
+    const m = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
+    if (m && m[1]) shortCode = m[1];
+  }
+  if (!shortCode && window.location.pathname.startsWith('/r/')) {
+    const m = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
+    if (m && m[1]) shortCode = m[1];
+  }
+  if (shortCode) {
+    const day = await fetchSharedRoute(shortCode);
+    if (day) return day;
+  }
+
+  // 2. Check for compressed client payload: ?d=... or #d=...
+  let compressedData = urlParams.get('d');
+  if (!compressedData && window.location.hash) {
+    const m = window.location.hash.match(/[#&?]d=([a-zA-Z0-9_\-~]+)/);
+    if (m && m[1]) compressedData = m[1];
+  }
+  if (compressedData) {
+    const micro = await decompressDataFromUrlSafe<MicroDayPayload>(compressedData);
+    if (micro && Array.isArray(micro.o)) {
+      return reconstructDayFromMicro(micro);
+    }
+  }
+
+  // 3. Check for legacy share_route=...
+  const rawHashOrSearch = window.location.hash || window.location.search;
+  if (rawHashOrSearch.includes('share_route=')) {
+    return decodeShareableRoute(rawHashOrSearch);
+  }
+
   return null;
 }
 

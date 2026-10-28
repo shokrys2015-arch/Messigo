@@ -56,7 +56,7 @@ import { OrderFormModal } from './components/OrderFormModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { RoutePdfModal } from './components/RoutePdfModal';
 import { ShareRouteModal } from './components/ShareRouteModal';
-import { decodeShareableRoute, fetchSharedRoute } from './services/shareService';
+import { decodeSharedRouteFromLocation } from './services/shareService';
 
 type ActiveTab = 'input' | 'review' | 'route' | 'history' | 'backup';
 
@@ -160,84 +160,36 @@ export default function App() {
         let viewingId = loadedActiveId;
         let shouldOpenRouteTab = false;
 
-        // Check if opened with a short route link (?r=... or #r=... or /r/...)
-        const urlParams = new URLSearchParams(window.location.search);
-        let shortRouteId = urlParams.get('r');
-        if (!shortRouteId && window.location.hash) {
-          const hashMatch = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
-          if (hashMatch && hashMatch[1]) {
-            shortRouteId = hashMatch[1];
-          }
-        }
-        if (!shortRouteId && window.location.pathname.startsWith('/r/')) {
-          const pathMatch = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
-          if (pathMatch && pathMatch[1]) {
-            shortRouteId = pathMatch[1];
-          }
-        }
+        // Check if opened with a shared route link (server code, compressed client code, or legacy)
+        try {
+          const sharedDay = await decodeSharedRouteFromLocation();
+          if (sharedDay) {
+            const exists = allDays.some((d) => d.id === sharedDay.id);
+            allDays = exists
+              ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
+              : [sharedDay, ...allDays];
 
-        if (shortRouteId) {
-          try {
-            const fetchedDay = await fetchSharedRoute(shortRouteId);
-            if (fetchedDay) {
-              const exists = allDays.some((d) => d.id === fetchedDay.id);
-              allDays = exists
-                ? allDays.map((d) => (d.id === fetchedDay.id ? fetchedDay : d))
-                : [fetchedDay, ...allDays];
+            await saveDayRecord(sharedDay);
+            activeId = sharedDay.id;
+            viewingId = sharedDay.id;
+            shouldOpenRouteTab = true;
 
-              await saveDayRecord(fetchedDay);
-              activeId = fetchedDay.id;
-              viewingId = fetchedDay.id;
-              shouldOpenRouteTab = true;
-
-              try {
-                window.history.replaceState(null, '', '/');
-              } catch {
-                // ignore
-              }
-
-              setTimeout(() => {
-                showToast(
-                  `🚚 تم فتح مسار التوصيل: "${fetchedDay.title}" للمندوب: ${
-                    fetchedDay.courierName || 'المندوب'
-                  } بنجاح`
-                );
-              }, 300);
+            try {
+              window.history.replaceState(null, '', '/');
+            } catch {
+              // ignore
             }
-          } catch (err) {
-            console.error('Failed to load shared route from short ID:', err);
+
+            setTimeout(() => {
+              showToast(
+                `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
+                  sharedDay.courierName || 'المندوب'
+                } بنجاح`
+              );
+            }, 300);
           }
-        } else {
-          // Check if opened with legacy shared route link (#share_route=... or ?share_route=...)
-          const rawHashOrSearch = window.location.hash || window.location.search;
-          if (rawHashOrSearch.includes('share_route=')) {
-            const sharedDay = decodeShareableRoute(rawHashOrSearch);
-            if (sharedDay) {
-              const exists = allDays.some((d) => d.id === sharedDay.id);
-              allDays = exists
-                ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
-                : [sharedDay, ...allDays];
-
-              await saveDayRecord(sharedDay);
-              activeId = sharedDay.id;
-              viewingId = sharedDay.id;
-              shouldOpenRouteTab = true;
-
-              try {
-                window.history.replaceState(null, '', window.location.pathname);
-              } catch {
-                // ignore
-              }
-
-              setTimeout(() => {
-                showToast(
-                  `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
-                    sharedDay.courierName || 'المندوب'
-                  } بنجاح`
-                );
-              }, 300);
-            }
-          }
+        } catch (err) {
+          console.error('Failed to resolve shared route:', err);
         }
 
         setDays(allDays);
@@ -245,6 +197,23 @@ export default function App() {
         setViewingDayId(viewingId);
         if (shouldOpenRouteTab) {
           setActiveTab('route');
+          const targetDay = allDays.find((d) => d.id === activeId);
+          if (
+            targetDay &&
+            !targetDay.calculatedRoute &&
+            targetDay.startPoint &&
+            targetDay.orders.length > 0
+          ) {
+            calculateOptimizedRoadRoute(targetDay.startPoint, targetDay.orders)
+              .then(async (computedRoute) => {
+                const withRoute = { ...targetDay, calculatedRoute: computedRoute };
+                await saveDayRecord(withRoute);
+                setDays((prev) =>
+                  prev.map((d) => (d.id === withRoute.id ? withRoute : d))
+                );
+              })
+              .catch(() => {});
+          }
         }
         setIsDbLoaded(true);
       })
@@ -261,57 +230,8 @@ export default function App() {
   // Listen to hashchange or popstate if user clicks a shared link while app is already open
   useEffect(() => {
     const handleUrlChange = async () => {
-      // Check for short code first (?r=... or #r=... or /r/...)
-      const searchParams = new URLSearchParams(window.location.search);
-      let shortCode = searchParams.get('r');
-      if (!shortCode && window.location.hash) {
-        const match = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-          shortCode = match[1];
-        }
-      }
-      if (!shortCode && window.location.pathname.startsWith('/r/')) {
-        const match = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-          shortCode = match[1];
-        }
-      }
-
-      if (shortCode) {
-        try {
-          const fetchedDay = await fetchSharedRoute(shortCode);
-          if (fetchedDay) {
-            setDays((prev) => {
-              const exists = prev.some((d) => d.id === fetchedDay.id);
-              return exists
-                ? prev.map((d) => (d.id === fetchedDay.id ? fetchedDay : d))
-                : [fetchedDay, ...prev];
-            });
-            await saveDayRecord(fetchedDay);
-            setActiveDayId(fetchedDay.id);
-            setViewingDayId(fetchedDay.id);
-            setActiveTab('route');
-            showToast(
-              `🚚 تم فتح مسار التوصيل: "${fetchedDay.title}" للمندوب: ${
-                fetchedDay.courierName || 'المندوب'
-              }`
-            );
-            try {
-              window.history.replaceState(null, '', '/');
-            } catch {
-              // ignore
-            }
-            return;
-          }
-        } catch (err) {
-          console.error('Failed to resolve short route URL on navigation:', err);
-        }
-      }
-
-      // Legacy hash fallback
-      const hash = window.location.hash;
-      if (hash.includes('share_route=')) {
-        const sharedDay = decodeShareableRoute(hash);
+      try {
+        const sharedDay = await decodeSharedRouteFromLocation();
         if (sharedDay) {
           setDays((prev) => {
             const exists = prev.some((d) => d.id === sharedDay.id);
@@ -329,11 +249,25 @@ export default function App() {
             }`
           );
           try {
-            window.history.replaceState(null, '', window.location.pathname);
+            window.history.replaceState(null, '', '/');
           } catch {
             // ignore
           }
+
+          if (!sharedDay.calculatedRoute && sharedDay.startPoint && sharedDay.orders.length > 0) {
+            calculateOptimizedRoadRoute(sharedDay.startPoint, sharedDay.orders)
+              .then(async (computedRoute) => {
+                const withRoute = { ...sharedDay, calculatedRoute: computedRoute };
+                await saveDayRecord(withRoute);
+                setDays((prev) =>
+                  prev.map((d) => (d.id === withRoute.id ? withRoute : d))
+                );
+              })
+              .catch(() => {});
+          }
         }
+      } catch (err) {
+        console.error('Failed to resolve shared route on URL change:', err);
       }
     };
 
