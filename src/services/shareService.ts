@@ -103,7 +103,65 @@ export function createCompactSharePayload(day: DayRecord): Partial<DayRecord> {
 }
 
 /**
- * Builds the full direct URL that can be shared via WhatsApp or copied.
+ * Asynchronously generates an ultra-short route URL via the server route storage.
+ * Creates an ultra-clean URL like: https://domain.com/?r=k8x2m9
+ */
+export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
+  try {
+    const payload = createCompactSharePayload(day);
+    const res = await fetch('/api/routes/share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ day: payload }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.shortId) {
+        const baseUrl = `${window.location.origin}${window.location.pathname}`;
+        return `${baseUrl}?r=${data.shortId}`;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not contact /api/routes/share, falling back to base64 link:', err);
+  }
+
+  // Fallback to client-side encoded URL if server is unreachable
+  return generateShareableRouteUrl(day);
+}
+
+/**
+ * Fetches a shared route by its short ID from the server
+ */
+export async function fetchSharedRoute(shortId: string): Promise<DayRecord | null> {
+  try {
+    const res = await fetch(`/api/routes/${encodeURIComponent(shortId)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json?.success && json?.data && Array.isArray(json.data.orders)) {
+      const data = json.data;
+      return {
+        id: data.id || `shared_${Date.now()}`,
+        title: data.title || 'مسار توصيل مشترك',
+        dateKey: data.dateKey || new Date().toISOString().split('T')[0],
+        courierName: data.courierName,
+        createdAt: data.createdAt || new Date().toISOString(),
+        updatedAt: data.updatedAt || new Date().toISOString(),
+        rawInputText: '',
+        isArchived: false,
+        startPoint: data.startPoint || null,
+        calculatedRoute: data.calculatedRoute || null,
+        orders: data.orders,
+      };
+    }
+  } catch (err) {
+    console.error('Failed to fetch shared route from server:', err);
+  }
+  return null;
+}
+
+/**
+ * Fallback generator for full direct URL (used if offline)
  * Uses window.location.origin + pathname + #share_route=...
  */
 export function generateShareableRouteUrl(day: DayRecord): string {

@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -11,6 +12,57 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
+
+// Shared routes disk cache
+const DATA_DIR = path.join(__dirname, '.data');
+const ROUTES_FILE = path.join(DATA_DIR, 'shared_routes.json');
+const sharedRoutes = new Map<string, any>();
+
+function loadSharedRoutes() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(ROUTES_FILE)) {
+      const data = fs.readFileSync(ROUTES_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed === 'object') {
+        for (const [key, value] of Object.entries(parsed)) {
+          sharedRoutes.set(key, value);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load shared routes from disk:', err);
+  }
+}
+
+function saveSharedRoutes() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const obj: Record<string, any> = {};
+    for (const [key, value] of sharedRoutes.entries()) {
+      obj[key] = value;
+    }
+    fs.writeFileSync(ROUTES_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save shared routes to disk:', err);
+  }
+}
+
+// Generate short, unambiguous 6-character alphanumeric identifier
+function generateShortId(length = 6): string {
+  const chars = '23456789abcdefghjkmnpqrstuvwxyz';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+loadSharedRoutes();
 
 // Geographical bounding box for the Arab Republic of Egypt
 const EGYPT_BOUNDS = {
@@ -76,7 +128,70 @@ function extractCoordsFromExpandedUrl(urlStr: string): { lat: number; lng: numbe
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '10mb' }));
+
+  // Store a shared delivery route and return a concise, ultra-short code
+  app.post('/api/routes/share', (req, res) => {
+    try {
+      const dayData = req.body?.day;
+      if (!dayData || !Array.isArray(dayData.orders)) {
+        return res.status(400).json({ error: 'بيانات المسار غير صالحة' });
+      }
+
+      // Reuse existing shortId if this day record with exact updatedAt was already saved
+      let assignedId: string | null = null;
+      if (dayData.id) {
+        for (const [id, saved] of sharedRoutes.entries()) {
+          if (saved.id === dayData.id && saved.updatedAt === dayData.updatedAt) {
+            assignedId = id;
+            break;
+          }
+        }
+      }
+
+      if (!assignedId) {
+        // Ensure uniqueness
+        let attempts = 0;
+        do {
+          assignedId = generateShortId(6);
+          attempts++;
+        } while (sharedRoutes.has(assignedId) && attempts < 20);
+      }
+
+      sharedRoutes.set(assignedId, {
+        ...dayData,
+        sharedAt: new Date().toISOString(),
+      });
+      saveSharedRoutes();
+
+      return res.json({
+        success: true,
+        shortId: assignedId,
+      });
+    } catch (error) {
+      console.error('Error sharing route:', error);
+      return res.status(500).json({ error: 'فشل حفظ ومشاركة المسار' });
+    }
+  });
+
+  // Retrieve a shared delivery route by short ID
+  app.get('/api/routes/:id', (req, res) => {
+    try {
+      const shortId = req.params.id;
+      if (!shortId || !sharedRoutes.has(shortId)) {
+        return res.status(404).json({ error: 'المسار غير موجود أو انتهت صلاحيته' });
+      }
+
+      const routeData = sharedRoutes.get(shortId);
+      return res.json({
+        success: true,
+        data: routeData,
+      });
+    } catch (error) {
+      console.error('Error retrieving shared route:', error);
+      return res.status(500).json({ error: 'فشل تحميل بيانات المسار' });
+    }
+  });
 
   // Server-side Egyptian address & Google Maps short-link resolver
   app.post('/api/geocode-egypt', async (req, res) => {

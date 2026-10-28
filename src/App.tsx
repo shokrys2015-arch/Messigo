@@ -56,7 +56,7 @@ import { OrderFormModal } from './components/OrderFormModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { RoutePdfModal } from './components/RoutePdfModal';
 import { ShareRouteModal } from './components/ShareRouteModal';
-import { decodeShareableRoute } from './services/shareService';
+import { decodeShareableRoute, fetchSharedRoute } from './services/shareService';
 
 type ActiveTab = 'input' | 'review' | 'route' | 'history' | 'backup';
 
@@ -160,35 +160,77 @@ export default function App() {
         let viewingId = loadedActiveId;
         let shouldOpenRouteTab = false;
 
-        // Check if opened with a shared route link (#share_route=... or ?share_route=...)
-        const rawHashOrSearch = window.location.hash || window.location.search;
-        if (rawHashOrSearch.includes('share_route=')) {
-          const sharedDay = decodeShareableRoute(rawHashOrSearch);
-          if (sharedDay) {
-            const exists = allDays.some((d) => d.id === sharedDay.id);
-            allDays = exists
-              ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
-              : [sharedDay, ...allDays];
+        // Check if opened with a short route link (?r=... or #r=...)
+        const urlParams = new URLSearchParams(window.location.search);
+        let shortRouteId = urlParams.get('r');
+        if (!shortRouteId && window.location.hash) {
+          const hashMatch = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
+          if (hashMatch && hashMatch[1]) {
+            shortRouteId = hashMatch[1];
+          }
+        }
 
-            await saveDayRecord(sharedDay);
-            activeId = sharedDay.id;
-            viewingId = sharedDay.id;
-            shouldOpenRouteTab = true;
+        if (shortRouteId) {
+          try {
+            const fetchedDay = await fetchSharedRoute(shortRouteId);
+            if (fetchedDay) {
+              const exists = allDays.some((d) => d.id === fetchedDay.id);
+              allDays = exists
+                ? allDays.map((d) => (d.id === fetchedDay.id ? fetchedDay : d))
+                : [fetchedDay, ...allDays];
 
-            // Clean up the URL hash
-            try {
-              window.history.replaceState(null, '', window.location.pathname);
-            } catch {
-              // ignore
+              await saveDayRecord(fetchedDay);
+              activeId = fetchedDay.id;
+              viewingId = fetchedDay.id;
+              shouldOpenRouteTab = true;
+
+              try {
+                window.history.replaceState(null, '', window.location.pathname);
+              } catch {
+                // ignore
+              }
+
+              setTimeout(() => {
+                showToast(
+                  `🚚 تم فتح مسار التوصيل: "${fetchedDay.title}" للمندوب: ${
+                    fetchedDay.courierName || 'المندوب'
+                  } بنجاح`
+                );
+              }, 300);
             }
+          } catch (err) {
+            console.error('Failed to load shared route from short ID:', err);
+          }
+        } else {
+          // Check if opened with legacy shared route link (#share_route=... or ?share_route=...)
+          const rawHashOrSearch = window.location.hash || window.location.search;
+          if (rawHashOrSearch.includes('share_route=')) {
+            const sharedDay = decodeShareableRoute(rawHashOrSearch);
+            if (sharedDay) {
+              const exists = allDays.some((d) => d.id === sharedDay.id);
+              allDays = exists
+                ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
+                : [sharedDay, ...allDays];
 
-            setTimeout(() => {
-              showToast(
-                `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
-                  sharedDay.courierName || 'المندوب'
-                } بنجاح`
-              );
-            }, 300);
+              await saveDayRecord(sharedDay);
+              activeId = sharedDay.id;
+              viewingId = sharedDay.id;
+              shouldOpenRouteTab = true;
+
+              try {
+                window.history.replaceState(null, '', window.location.pathname);
+              } catch {
+                // ignore
+              }
+
+              setTimeout(() => {
+                showToast(
+                  `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
+                    sharedDay.courierName || 'المندوب'
+                  } بنجاح`
+                );
+              }, 300);
+            }
           }
         }
 
@@ -210,9 +252,51 @@ export default function App() {
     };
   }, []);
 
-  // Listen to hashchange if user clicks a shared link while app is already running
+  // Listen to hashchange or popstate if user clicks a shared link while app is already open
   useEffect(() => {
-    const handleHashChange = async () => {
+    const handleUrlChange = async () => {
+      // Check for short code first
+      const searchParams = new URLSearchParams(window.location.search);
+      let shortCode = searchParams.get('r');
+      if (!shortCode && window.location.hash) {
+        const match = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          shortCode = match[1];
+        }
+      }
+
+      if (shortCode) {
+        try {
+          const fetchedDay = await fetchSharedRoute(shortCode);
+          if (fetchedDay) {
+            setDays((prev) => {
+              const exists = prev.some((d) => d.id === fetchedDay.id);
+              return exists
+                ? prev.map((d) => (d.id === fetchedDay.id ? fetchedDay : d))
+                : [fetchedDay, ...prev];
+            });
+            await saveDayRecord(fetchedDay);
+            setActiveDayId(fetchedDay.id);
+            setViewingDayId(fetchedDay.id);
+            setActiveTab('route');
+            showToast(
+              `🚚 تم فتح مسار التوصيل: "${fetchedDay.title}" للمندوب: ${
+                fetchedDay.courierName || 'المندوب'
+              }`
+            );
+            try {
+              window.history.replaceState(null, '', window.location.pathname);
+            } catch {
+              // ignore
+            }
+            return;
+          }
+        } catch (err) {
+          console.error('Failed to resolve short route URL on navigation:', err);
+        }
+      }
+
+      // Legacy hash fallback
       const hash = window.location.hash;
       if (hash.includes('share_route=')) {
         const sharedDay = decodeShareableRoute(hash);
@@ -241,8 +325,12 @@ export default function App() {
       }
     };
 
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', handleUrlChange);
+    window.addEventListener('popstate', handleUrlChange);
+    return () => {
+      window.removeEventListener('hashchange', handleUrlChange);
+      window.removeEventListener('popstate', handleUrlChange);
+    };
   }, []);
 
   // Currently viewed day record (either active today or an inspected historical day)

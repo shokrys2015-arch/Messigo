@@ -1,15 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calendar,
   Check,
   CheckCircle2,
   Copy,
   ExternalLink,
+  Loader2,
   MapPin,
   MessageCircle,
   Navigation,
   Route,
   Share2,
+  Sparkles,
   User,
   X,
 } from 'lucide-react';
@@ -17,6 +19,7 @@ import { DayRecord } from '../types/messigo';
 import {
   buildWhatsappShareText,
   generateShareableRouteUrl,
+  generateShortRouteUrl,
 } from '../services/shareService';
 import { parsePriceToNumber } from './RoutePdfModal';
 import { formatDistanceArabic } from '../services/routingService';
@@ -37,20 +40,46 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   onCopySuccess,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [shortUrl, setShortUrl] = useState<string>('');
+  const [isGeneratingUrl, setIsGeneratingUrl] = useState<boolean>(true);
 
-  // Compute shareable URL and WhatsApp text
-  const { shareUrl, whatsappText, totalPrice, deliveredOrders } = useMemo(() => {
+  // Generate short URL asynchronously whenever the modal opens or the day changes
+  useEffect(() => {
+    if (!isOpen || !day) return;
+    let isMounted = true;
+    setIsGeneratingUrl(true);
+
+    generateShortRouteUrl(day)
+      .then((url) => {
+        if (isMounted) {
+          setShortUrl(url);
+          setIsGeneratingUrl(false);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to generate short route URL:', err);
+        if (isMounted) {
+          setShortUrl(generateShareableRouteUrl(day));
+          setIsGeneratingUrl(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, day]);
+
+  // Compute WhatsApp text and stats
+  const { whatsappText, totalPrice, deliveredOrders } = useMemo(() => {
     if (!day) {
       return {
-        shareUrl: '',
         whatsappText: '',
         totalPrice: 0,
         deliveredOrders: 0,
       };
     }
 
-    const url = generateShareableRouteUrl(day);
-    const text = buildWhatsappShareText(day, url);
+    const text = buildWhatsappShareText(day, shortUrl || '...');
     const price = day.orders.reduce(
       (sum, o) => sum + parsePriceToNumber(o.totalPrice),
       0
@@ -60,12 +89,11 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     ).length;
 
     return {
-      shareUrl: url,
       whatsappText: text,
       totalPrice: price,
       deliveredOrders: delivered,
     };
-  }, [day]);
+  }, [day, shortUrl]);
 
   if (!isOpen || !day) return null;
 
@@ -73,12 +101,13 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   const hasNativeShare = typeof navigator !== 'undefined' && Boolean(navigator.share);
 
   const handleCopyLink = async () => {
+    if (!shortUrl) return;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(shareUrl);
+        await navigator.clipboard.writeText(shortUrl);
       } else {
         const input = document.createElement('textarea');
-        input.value = shareUrl;
+        input.value = shortUrl;
         document.body.appendChild(input);
         input.select();
         document.execCommand('copy');
@@ -86,7 +115,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
       }
       setCopied(true);
       if (onCopySuccess) {
-        onCopySuccess('تم نسخ رابط مسار التوصيل بنجاح!');
+        onCopySuccess('تم نسخ الرابط المختصر لمسار التوصيل بنجاح!');
       }
       setTimeout(() => setCopied(false), 3000);
     } catch (err) {
@@ -95,17 +124,18 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   };
 
   const handleOpenWhatsapp = () => {
+    if (!whatsappText) return;
     const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
     window.open(waUrl, '_blank', 'noopener,noreferrer');
   };
 
   const handleNativeShare = async () => {
-    if (!navigator.share) return;
+    if (!navigator.share || !shortUrl) return;
     try {
       await navigator.share({
         title: `مسار توصيل: ${day.title}`,
         text: whatsappText,
-        url: shareUrl,
+        url: shortUrl,
       });
     } catch (err) {
       // User cancelled or share failed silently
@@ -229,29 +259,57 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
           <button
             type="button"
             onClick={handleOpenWhatsapp}
-            className="w-full min-h-[50px] py-3 px-4 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-emerald-500/20 hover:shadow-lg transition-all active:scale-[0.99]"
+            disabled={isGeneratingUrl}
+            className={`w-full min-h-[50px] py-3 px-4 rounded-2xl text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-emerald-500/20 hover:shadow-lg transition-all active:scale-[0.99] ${
+              isGeneratingUrl
+                ? 'bg-slate-400 cursor-not-allowed opacity-80'
+                : 'bg-[#25D366] hover:bg-[#20bd5a]'
+            }`}
           >
-            <MessageCircle className="w-5 h-5 fill-white" />
-            <span>إرسال عبر واتساب للمندوب</span>
+            {isGeneratingUrl ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin text-white" />
+                <span>جاري تجهيز الرابط المختصر...</span>
+              </>
+            ) : (
+              <>
+                <MessageCircle className="w-5 h-5 fill-white" />
+                <span>إرسال عبر واتساب للمندوب</span>
+              </>
+            )}
           </button>
 
           {/* Primary Action 2: Copy Link */}
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 block">
-              رابط المشاركة المباشر
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                <span>رابط المسار المختصر</span>
+                <span className="text-[10px] font-medium bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                  قصير ومناسب للواتساب
+                </span>
+              </label>
+              {isGeneratingUrl && (
+                <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                  <span>توليد الرابط...</span>
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 readOnly
-                value={shareUrl}
-                className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-600 truncate focus:outline-hidden"
+                value={isGeneratingUrl ? 'جاري توليد الرابط المختصر...' : shortUrl}
+                className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-700 truncate focus:outline-hidden select-all"
               />
               <button
                 type="button"
                 onClick={handleCopyLink}
+                disabled={isGeneratingUrl}
                 className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shrink-0 shadow-xs ${
-                  copied
+                  isGeneratingUrl
+                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    : copied
                     ? 'bg-emerald-600 text-white'
                     : 'bg-slate-900 hover:bg-slate-800 text-white'
                 }`}
