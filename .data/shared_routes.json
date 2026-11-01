@@ -1,0 +1,26 @@
+{
+  "43f3wa": {
+    "id": "test_1",
+    "title": "أوردر تجريبي",
+    "dateKey": "2026-10-28",
+    "orders": [],
+    "sharedAt": "2026-11-01T13:11:26.704Z"
+  },
+  "5uvx4s": {
+    "id": "day_test_100",
+    "title": "أوردرات الأربعاء، ٢٨ أكتوبر",
+    "dateKey": "2026-10-28",
+    "courierName": "عمرو",
+    "orders": [
+      {
+        "id": "1",
+        "customerName": "مدام رانيا",
+        "phone": "01044544066",
+        "address": "التجمع",
+        "totalPrice": "1750",
+        "deliveryStatus": "قيد الانتظار"
+      }
+    ],
+    "sharedAt": "2026-11-01T13:14:32.582Z"
+  }
+}

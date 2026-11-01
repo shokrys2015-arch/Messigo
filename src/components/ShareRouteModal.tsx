@@ -96,6 +96,12 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     };
   }, [day, shortUrl]);
 
+  // Universal WhatsApp Click-to-Chat URL (works without phone number on web & mobile)
+  const whatsappUrl = useMemo(() => {
+    if (!whatsappText) return '';
+    return `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
+  }, [whatsappText]);
+
   if (!isOpen || !day) return null;
 
   const totalOrders = day.orders.length;
@@ -124,45 +130,24 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     }
   };
 
-  const handleOpenWhatsapp = async () => {
-    let urlToUse = shortUrl;
-    if (!urlToUse || isGeneratingUrl) {
-      try {
-        setIsGeneratingUrl(true);
-        urlToUse = await generateShortRouteUrl(day);
-        setShortUrl(urlToUse);
-        setIsGeneratingUrl(false);
-      } catch (err) {
-        console.error('Failed to generate short route URL:', err);
-        urlToUse = generateShareableRouteUrl(day);
-      }
+  const handleOpenWhatsapp = (e?: React.MouseEvent) => {
+    if (!whatsappUrl) return;
+    try {
+      window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      window.location.href = whatsappUrl;
     }
-
-    if (!urlToUse) return;
-
-    const message = buildWhatsappShareText(day, urlToUse);
-    // wa.me is the universal WhatsApp standard for web & mobile
-    const waUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
-    window.open(waUrl, '_blank', 'noopener,noreferrer');
   };
 
   const handleCopyWhatsappText = async () => {
-    let urlToUse = shortUrl;
-    if (!urlToUse || isGeneratingUrl) {
-      try {
-        urlToUse = await generateShortRouteUrl(day);
-        setShortUrl(urlToUse);
-      } catch {
-        urlToUse = generateShareableRouteUrl(day);
-      }
-    }
-    const message = buildWhatsappShareText(day, urlToUse);
+    const textToCopy = whatsappText || (day && shortUrl ? buildWhatsappShareText(day, shortUrl) : '');
+    if (!textToCopy) return;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(message);
+        await navigator.clipboard.writeText(textToCopy);
       } else {
         const input = document.createElement('textarea');
-        input.value = message;
+        input.value = textToCopy;
         document.body.appendChild(input);
         input.select();
         document.execCommand('copy');
@@ -311,28 +296,29 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
           </div>
 
           {/* Primary Action 1: WhatsApp Share */}
-          <button
-            type="button"
-            onClick={handleOpenWhatsapp}
-            disabled={isGeneratingUrl}
-            className={`w-full min-h-[50px] py-3 px-4 rounded-2xl text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-emerald-500/20 hover:shadow-lg transition-all active:scale-[0.99] ${
-              isGeneratingUrl
-                ? 'bg-slate-400 cursor-not-allowed opacity-80'
-                : 'bg-[#25D366] hover:bg-[#20bd5a]'
-            }`}
-          >
-            {isGeneratingUrl ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin text-white" />
-                <span>جاري تجهيز الرابط المختصر...</span>
-              </>
-            ) : (
-              <>
-                <MessageCircle className="w-5 h-5 fill-white" />
-                <span>إرسال عبر واتساب للمندوب</span>
-              </>
-            )}
-          </button>
+          {isGeneratingUrl || !shortUrl ? (
+            <div className="w-full min-h-[50px] py-3 px-4 rounded-2xl bg-slate-200 text-slate-600 font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 cursor-wait select-none">
+              <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
+              <span>جاري تجهيز الرابط المختصر...</span>
+            </div>
+          ) : (
+            <a
+              href={whatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => {
+                // If on mobile browser where popups might be blocked, this ensures opening
+                if (!whatsappUrl) {
+                  e.preventDefault();
+                  handleOpenWhatsapp();
+                }
+              }}
+              className="w-full min-h-[50px] py-3 px-4 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-emerald-500/20 hover:shadow-lg transition-all active:scale-[0.99] no-underline"
+            >
+              <MessageCircle className="w-5 h-5 fill-white" />
+              <span>إرسال عبر واتساب للمندوب</span>
+            </a>
+          )}
 
           {/* Primary Action 2: Copy Link */}
           <div className="space-y-1.5">

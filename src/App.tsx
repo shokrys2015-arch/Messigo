@@ -175,7 +175,7 @@ export default function App() {
             shouldOpenRouteTab = true;
 
             try {
-              window.history.replaceState(null, '', '/');
+              window.history.replaceState(null, '', window.location.pathname);
             } catch {
               // ignore
             }
@@ -249,7 +249,7 @@ export default function App() {
             }`
           );
           try {
-            window.history.replaceState(null, '', '/');
+            window.history.replaceState(null, '', window.location.pathname);
           } catch {
             // ignore
           }
