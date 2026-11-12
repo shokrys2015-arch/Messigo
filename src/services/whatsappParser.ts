@@ -45,13 +45,22 @@ export interface ParsedUrlResult {
   isShortUrl: boolean;
 }
 
+function safeDecodeUrl(raw: string): string {
+  const plusReplaced = raw.replace(/\+/g, ' ');
+  try {
+    return decodeURIComponent(plusReplaced);
+  } catch {
+    return plusReplaced;
+  }
+}
+
 /**
  * Extracts coordinates or search query from Google Maps URLs or inline coordinate strings.
  * Strictly avoids inventing coordinates when only a place search query is present.
  */
 export function parseMapUrl(rawUrl: string): ParsedUrlResult {
   const url = rawUrl.trim();
-  const normalizedUrl = normalizeDigits(decodeURIComponent(url.replace(/\+/g, ' ')));
+  const normalizedUrl = normalizeDigits(safeDecodeUrl(url));
 
   const isShortUrl =
     /maps\.app\.goo\.gl/i.test(url) ||

@@ -116,16 +116,44 @@ export interface MicroDayPayload {
   k: string; // dateKey
   c?: string; // courierName
   s?: [number, number]; // startPoint coordinates [lat, lng]
+  r?: Array<[number, number]>; // optional route legs [distanceMeters, durationSeconds] in ordered sequence
   o: Array<[string, string, string, string, number | null, number | null, string?]>;
   // [customerName, phone, address, totalPrice, lat, lng, orderDetails]
 }
 
 /**
  * Creates an ultra-compact payload containing only necessary delivery info.
- * Drops heavy route polylines, duplicate texts, and redundant flags.
+ * Preserves optimized route order and leg distances if a route was calculated.
  */
 export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
-  const o: MicroDayPayload['o'] = day.orders.map((ord) => [
+  // If a route is calculated, order the stops according to the route sequence first
+  let orderedSourceOrders = day.orders;
+  let routeLegsCompact: Array<[number, number]> | undefined;
+
+  if (day.calculatedRoute && day.calculatedRoute.orderedOrderIds.length > 0) {
+    const orderMap = new Map(day.orders.map((ord) => [ord.id, ord]));
+    const inRoute: DeliveryOrder[] = [];
+    const seenIds = new Set<string>();
+
+    for (const id of day.calculatedRoute.orderedOrderIds) {
+      const found = orderMap.get(id);
+      if (found) {
+        inRoute.push(found);
+        seenIds.add(id);
+      }
+    }
+    const remaining = day.orders.filter((ord) => !seenIds.has(ord.id));
+    orderedSourceOrders = [...inRoute, ...remaining];
+
+    if (day.calculatedRoute.legs.length === inRoute.length) {
+      routeLegsCompact = day.calculatedRoute.legs.map((leg) => [
+        Math.round(leg.distanceMeters),
+        Math.round(leg.durationSeconds),
+      ]);
+    }
+  }
+
+  const o: MicroDayPayload['o'] = orderedSourceOrders.map((ord) => [
     ord.customerName?.trim() || '',
     ord.phone?.trim() || '',
     ord.address?.trim() || ord.locationText?.trim() || '',
@@ -147,6 +175,7 @@ export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
     k: day.dateKey || new Date().toISOString().split('T')[0],
     c: day.courierName?.trim() || undefined,
     s,
+    r: routeLegsCompact,
     o,
   };
 }
@@ -196,6 +225,50 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
         }
       : null;
 
+  // Reconstruct immediate calculatedRoute if startPoint and valid coordinates exist
+  let calculatedRoute: CalculatedRoute | null = null;
+  const routableOrders = orders.filter((o) => o.coordinates !== null);
+
+  if (startPoint && routableOrders.length > 0) {
+    let cumDist = 0;
+    let cumDur = 0;
+    const legs = routableOrders.map((ord, idx) => {
+      const compactLeg = micro.r && micro.r[idx];
+      const distanceMeters = compactLeg ? compactLeg[0] : 0;
+      const durationSeconds = compactLeg ? compactLeg[1] : 0;
+      cumDist += distanceMeters;
+      cumDur += durationSeconds;
+      return {
+        orderId: ord.id,
+        visitNumber: idx + 1,
+        distanceMeters,
+        durationSeconds,
+        cumulativeDistanceMeters: cumDist,
+        cumulativeDurationSeconds: cumDur,
+      };
+    });
+
+    const geometry: [number, number][] = [
+      [startPoint.coordinates.lat, startPoint.coordinates.lng],
+      ...routableOrders.map(
+        (o) => [o.coordinates!.lat, o.coordinates!.lng] as [number, number]
+      ),
+    ];
+
+    calculatedRoute = {
+      calculatedAt: new Date().toISOString(),
+      startPoint,
+      orderedOrderIds: routableOrders.map((o) => o.id),
+      legs,
+      totalDistanceMeters: cumDist,
+      totalDurationSeconds: cumDur,
+      geometry,
+      algorithmUsed: 'exact-open-tsp',
+      algorithmNote: 'تم استلام ترتيب خط السير المشترك وجاري تحديث رسم الطريق الفعلي.',
+      excludedOrderSummary: [],
+    };
+  }
+
   return {
     id: dayId,
     title: micro.t || 'مسار توصيل مشترك',
@@ -206,7 +279,7 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
     rawInputText: '',
     isArchived: false,
     startPoint,
-    calculatedRoute: null,
+    calculatedRoute,
     orders,
   };
 }

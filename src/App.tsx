@@ -44,6 +44,7 @@ import {
   loadAllDaysAndActiveId,
   restoreBackupToDb,
   saveDayRecord,
+  setActiveDayIdInDb,
   startNewDayInDb,
 } from './services/storageService';
 import { WhatsappInputView } from './components/WhatsappInputView';
@@ -140,6 +141,13 @@ export default function App() {
     dayId: string;
     title: string;
   }>({ isOpen: false, dayId: '', title: '' });
+
+  // Edit Courier Name Modal State (replaces blocked window.prompt)
+  const [courierModalState, setCourierModalState] = useState<{
+    isOpen: boolean;
+    dayId: string;
+    courierName: string;
+  }>({ isOpen: false, dayId: '', courierName: '' });
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -631,12 +639,14 @@ export default function App() {
         if (remainingDays.length === 0) {
           const brandNewDay = createBlankDayRecord();
           await saveDayRecord(brandNewDay);
+          await setActiveDayIdInDb(brandNewDay.id);
           setDays([brandNewDay]);
           setActiveDayId(brandNewDay.id);
           setViewingDayId(brandNewDay.id);
         } else {
           setDays(remainingDays);
           if (activeDayId === dayId) {
+            await setActiveDayIdInDb(remainingDays[0].id);
             setActiveDayId(remainingDays[0].id);
           }
           if (viewingDayId === dayId) {
@@ -733,7 +743,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 pb-20 md:pb-10">
       {/* Top Bar Contract: 1-row, 3-zone header */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 sm:px-8 h-16 flex items-center justify-between gap-8">
+      <header className="print:hidden sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-4 sm:px-8 h-16 flex items-center justify-between gap-8">
         {/* Zone 1: Brand Wordmark (single element) */}
         <a
           href="#top"
@@ -822,7 +832,7 @@ export default function App() {
       </header>
 
       {/* Main Content Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
+      <main className="print:hidden flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
         {/* Toast Notification */}
         {toastMessage && (
           <div className="p-3.5 bg-slate-900 text-white rounded-xl shadow-lg flex items-center justify-between gap-3 text-xs sm:text-sm font-medium">
@@ -865,10 +875,13 @@ export default function App() {
                 <span>المندوب: {currentDay.courierName.trim()}</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    const val = window.prompt('تعديل اسم المندوب لهذا الأوردر:', currentDay.courierName || '');
-                    if (val !== null) handleUpdateCourierName(currentDay.id, val);
-                  }}
+                  onClick={() =>
+                    setCourierModalState({
+                      isOpen: true,
+                      dayId: currentDay.id,
+                      courierName: currentDay.courierName || '',
+                    })
+                  }
                   className="p-0.5 hover:text-amber-950 transition-colors"
                   title="تعديل اسم المندوب"
                 >
@@ -878,10 +891,13 @@ export default function App() {
             ) : (
               <button
                 type="button"
-                onClick={() => {
-                  const val = window.prompt('أدخل اسم المندوب لهذا الأوردر:');
-                  if (val !== null && val.trim()) handleUpdateCourierName(currentDay.id, val.trim());
-                }}
+                onClick={() =>
+                  setCourierModalState({
+                    isOpen: true,
+                    dayId: currentDay.id,
+                    courierName: '',
+                  })
+                }
                 className="inline-flex items-center gap-1 text-slate-500 hover:text-amber-800 hover:bg-amber-50 border border-dashed border-slate-300 rounded px-2 py-0.5 transition-colors"
                 title="إضافة اسم المندوب لهذا الأوردر"
               >
@@ -1014,7 +1030,7 @@ export default function App() {
       </main>
 
       {/* Mobile Bottom Tab Bar (Thumb-Zone Ergonomics) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 grid grid-cols-5 items-center h-14 px-1">
+      <nav className="print:hidden md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 grid grid-cols-5 items-center h-14 px-1">
         <button
           type="button"
           onClick={() => setActiveTab('input')}
@@ -1270,6 +1286,70 @@ export default function App() {
                 className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-xl transition-colors shadow-2xs"
               >
                 حفظ التعديل
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Courier Name Edit Modal */}
+      {courierModalState.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-amber-700">
+                <User className="w-5 h-5" />
+                <h3 className="font-extrabold text-base text-slate-900">تعيين / تعديل اسم المندوب</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCourierModalState({ isOpen: false, dayId: '', courierName: '' })}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700">
+                اسم المندوب المسؤول عن التوصيل:
+              </label>
+              <input
+                type="text"
+                value={courierModalState.courierName}
+                onChange={(e) =>
+                  setCourierModalState((prev) => ({ ...prev, courierName: e.target.value }))
+                }
+                placeholder="مثال: كابتن محمد أو شكري..."
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium text-slate-800"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleUpdateCourierName(courierModalState.dayId, courierModalState.courierName);
+                    setCourierModalState({ isOpen: false, dayId: '', courierName: '' });
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setCourierModalState({ isOpen: false, dayId: '', courierName: '' })}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleUpdateCourierName(courierModalState.dayId, courierModalState.courierName);
+                  setCourierModalState({ isOpen: false, dayId: '', courierName: '' });
+                }}
+                className="px-5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors shadow-2xs"
+              >
+                حفظ اسم المندوب
               </button>
             </div>
           </div>
