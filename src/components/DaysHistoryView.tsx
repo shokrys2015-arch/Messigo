@@ -27,6 +27,8 @@ interface DaysHistoryViewProps {
   days: DayRecord[];
   activeDayId: string;
   selectedViewingDayId: string;
+  pendingDraftDay?: DayRecord | null;
+  onGoToPendingDraft?: () => void;
   onSelectDayToView: (dayId: string) => void;
   onRequestStartNewDay: () => void;
   onDeleteOrderFromDay: (dayId: string, orderId: string, customerName: string) => void;
@@ -41,6 +43,8 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
   days,
   activeDayId,
   selectedViewingDayId,
+  pendingDraftDay,
+  onGoToPendingDraft,
   onSelectDayToView,
   onRequestStartNewDay,
   onDeleteOrderFromDay,
@@ -176,6 +180,30 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
         </button>
       </div>
 
+      {/* Notice if there is an active draft with orders waiting for route calculation */}
+      {pendingDraftDay && pendingDraftDay.orders.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs sm:text-sm text-amber-950">
+            <span className="font-bold">أوردر قيد التجهيز حاليًا: </span>
+            <span>
+              «{pendingDraftDay.title}» يحتوي على{' '}
+              <strong className="font-mono tabular-nums">{pendingDraftDay.orders.length}</strong> شحنة، وسيتم تسجيله هنا في سجل الأوردرات تلقائيًا بمجرد الضغط على{' '}
+              <strong>«حساب أفضل خط سير»</strong>.
+            </span>
+          </div>
+          {onGoToPendingDraft && (
+            <button
+              type="button"
+              onClick={onGoToPendingDraft}
+              className="min-h-[38px] px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+            >
+              <Route className="w-3.5 h-3.5" />
+              <span>متابعة المراجعة وحساب المسار</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Dedicated Search & Filter Bar Section */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
         <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -286,11 +314,16 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
       <div className="space-y-4">
         {filteredDays.length === 0 ? (
           <div className="p-8 text-center bg-white border border-slate-200 rounded-2xl space-y-3">
-            <p className="text-slate-600 text-sm">
+            <p className="text-slate-700 font-semibold text-sm">
               {isFilterActive
                 ? 'لا توجد سجلات تطابق شروط البحث أو التصفية الحالية.'
-                : 'لا توجد سجلات أوردرات محفوظة حتى الآن.'}
+                : 'لا توجد سجلات أوردرات محفوظة حتى الآن (0).'}
             </p>
+            {!isFilterActive && (
+              <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                يتم حفظ الأوردر وإضافته إلى «سجل الأوردرات» تلقائيًا بمجرد إدخال الشحنات والضغط على زر «حساب أفضل خط سير».
+              </p>
+            )}
             {isFilterActive && (
               <button
                 type="button"

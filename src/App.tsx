@@ -292,6 +292,11 @@ export default function App() {
     return days.find((d) => d.id === viewingDayId) || days.find((d) => d.id === activeDayId);
   }, [days, viewingDayId, activeDayId]);
 
+  // Only include days in "سجل الأوردرات" after their route has been calculated
+  const historyDays: DayRecord[] = useMemo(() => {
+    return days.filter((d) => Boolean(d.calculatedRoute));
+  }, [days]);
+
   const isViewingHistoricalDay = Boolean(
     currentDay && activeDayId && currentDay.id !== activeDayId
   );
@@ -576,10 +581,12 @@ export default function App() {
     const chosenTitle = newOrderTitleInput.trim() || undefined;
     const chosenCourier = newOrderCourierInput.trim() || undefined;
     const { archivedDay, newDay } = await startNewDayInDb(activeDay, chosenTitle, chosenCourier);
-    setDays((prev) => [
-      newDay,
-      ...prev.map((d) => (d.id === archivedDay.id ? archivedDay : d)),
-    ]);
+    setDays((prev) => {
+      if (archivedDay) {
+        return [newDay, ...prev.map((d) => (d.id === archivedDay.id ? archivedDay : d))];
+      }
+      return [newDay, ...prev.filter((d) => d.id !== activeDay.id)];
+    });
     setActiveDayId(newDay.id);
     setViewingDayId(newDay.id);
     setIsNewOrderModalOpen(false);
@@ -803,7 +810,7 @@ export default function App() {
                 : 'border-transparent hover:text-slate-900'
             }`}
           >
-            سجل الأوردرات ({days.length})
+            سجل الأوردرات ({historyDays.length})
           </button>
           <button
             type="button"
@@ -997,9 +1004,14 @@ export default function App() {
 
         {activeTab === 'history' && (
           <DaysHistoryView
-            days={days}
+            days={historyDays}
             activeDayId={activeDayId}
             selectedViewingDayId={currentDay.id}
+            pendingDraftDay={!currentDay.calculatedRoute ? currentDay : null}
+            onGoToPendingDraft={() => {
+              setViewingDayId(currentDay.id);
+              setActiveTab(currentDay.orders.length > 0 ? 'review' : 'input');
+            }}
             onSelectDayToView={(dayId) => {
               setViewingDayId(dayId);
               const targetDay = days.find((d) => d.id === dayId);
@@ -1021,7 +1033,7 @@ export default function App() {
 
         {activeTab === 'backup' && (
           <BackupView
-            days={days}
+            days={historyDays}
             activeDayId={activeDayId}
             onExportBackup={handleExportBackup}
             onConfirmImportBackup={handleConfirmImportBackup}
@@ -1074,7 +1086,9 @@ export default function App() {
           }`}
         >
           <History className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">الأوردرات</span>
+          <span className="text-[10px] mt-0.5 whitespace-nowrap">
+            الأوردرات ({historyDays.length})
+          </span>
         </button>
 
         <button

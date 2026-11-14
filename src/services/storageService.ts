@@ -105,17 +105,24 @@ export async function startNewDayInDb(
   currentDay: DayRecord,
   newDayTitle?: string,
   courierName?: string
-): Promise<{ archivedDay: DayRecord; newDay: DayRecord }> {
+): Promise<{ archivedDay: DayRecord | null; newDay: DayRecord }> {
   const db = await getDb();
-  const archivedDay: DayRecord = {
-    ...currentDay,
-    isArchived: true,
-    updatedAt: new Date().toISOString(),
-  };
+  const isEmptyDraft = currentDay.orders.length === 0 && !currentDay.calculatedRoute;
+  const archivedDay: DayRecord | null = isEmptyDraft
+    ? null
+    : {
+        ...currentDay,
+        isArchived: true,
+        updatedAt: new Date().toISOString(),
+      };
   const newDay = createBlankDayRecord(newDayTitle, courierName);
 
   const tx = db.transaction([DAYS_STORE, META_STORE], 'readwrite');
-  await tx.objectStore(DAYS_STORE).put(archivedDay);
+  if (archivedDay) {
+    await tx.objectStore(DAYS_STORE).put(archivedDay);
+  } else {
+    await tx.objectStore(DAYS_STORE).delete(currentDay.id);
+  }
   await tx.objectStore(DAYS_STORE).put(newDay);
   await tx.objectStore(META_STORE).put(newDay.id, 'activeDayId');
   await tx.done;
