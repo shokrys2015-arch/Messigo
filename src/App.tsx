@@ -159,8 +159,20 @@ export default function App() {
   // Load initial data from IndexedDB and handle shared delivery route deep link
   useEffect(() => {
     let mounted = true;
-    loadAllDaysAndActiveId()
-      .then(async ({ days: loadedDays, activeDayId: loadedActiveId }) => {
+
+    async function initApp() {
+      try {
+        // 1. Decode shared route from URL first before anything else
+        let sharedDay: DayRecord | null = null;
+        try {
+          sharedDay = await decodeSharedRouteFromLocation();
+        } catch (err) {
+          console.error('Failed to resolve shared route:', err);
+        }
+
+        // 2. Load existing local days from IndexedDB
+        const { days: loadedDays, activeDayId: loadedActiveId } =
+          await loadAllDaysAndActiveId();
         if (!mounted) return;
 
         let allDays = loadedDays;
@@ -168,36 +180,47 @@ export default function App() {
         let viewingId = loadedActiveId;
         let shouldOpenRouteTab = false;
 
-        // Check if opened with a shared route link (server code, compressed client code, or legacy)
-        try {
-          const sharedDay = await decodeSharedRouteFromLocation();
-          if (sharedDay) {
-            const exists = allDays.some((d) => d.id === sharedDay.id);
-            allDays = exists
-              ? allDays.map((d) => (d.id === sharedDay.id ? sharedDay : d))
-              : [sharedDay, ...allDays];
+        if (sharedDay) {
+          // Give the shared route a distinct ID if an existing day has the same ID
+          const incomingDay: DayRecord = {
+            ...sharedDay,
+            id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          };
 
-            await saveDayRecord(sharedDay);
-            activeId = sharedDay.id;
-            viewingId = sharedDay.id;
-            shouldOpenRouteTab = true;
+          allDays = [incomingDay, ...allDays];
+          await saveDayRecord(incomingDay);
+          await setActiveDayIdInDb(incomingDay.id);
 
-            try {
-              window.history.replaceState(null, '', window.location.pathname);
-            } catch {
-              // ignore
-            }
+          activeId = incomingDay.id;
+          viewingId = incomingDay.id;
+          shouldOpenRouteTab = true;
 
-            setTimeout(() => {
-              showToast(
-                `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
-                  sharedDay.courierName || 'المندوب'
-                } بنجاح`
-              );
-            }, 300);
+          try {
+            window.history.replaceState(null, '', window.location.pathname);
+          } catch {
+            // ignore
           }
-        } catch (err) {
-          console.error('Failed to resolve shared route:', err);
+
+          setTimeout(() => {
+            showToast(
+              `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
+            );
+          }, 300);
+
+          // Refresh full road geometry from OSRM in the background so the map polyline follows exact streets
+          if (incomingDay.startPoint && incomingDay.orders.length > 0) {
+            calculateOptimizedRoadRoute(incomingDay.startPoint, incomingDay.orders)
+              .then(async (computedRoute) => {
+                const withRoute = { ...incomingDay, calculatedRoute: computedRoute };
+                await saveDayRecord(withRoute);
+                if (mounted) {
+                  setDays((prev) =>
+                    prev.map((d) => (d.id === withRoute.id ? withRoute : d))
+                  );
+                }
+              })
+              .catch(() => {});
+          }
         }
 
         setDays(allDays);
@@ -205,56 +228,40 @@ export default function App() {
         setViewingDayId(viewingId);
         if (shouldOpenRouteTab) {
           setActiveTab('route');
-          const targetDay = allDays.find((d) => d.id === activeId);
-          if (
-            targetDay &&
-            !targetDay.calculatedRoute &&
-            targetDay.startPoint &&
-            targetDay.orders.length > 0
-          ) {
-            calculateOptimizedRoadRoute(targetDay.startPoint, targetDay.orders)
-              .then(async (computedRoute) => {
-                const withRoute = { ...targetDay, calculatedRoute: computedRoute };
-                await saveDayRecord(withRoute);
-                setDays((prev) =>
-                  prev.map((d) => (d.id === withRoute.id ? withRoute : d))
-                );
-              })
-              .catch(() => {});
-          }
         }
         setIsDbLoaded(true);
-      })
-      .catch((err) => {
-        console.error('Failed to load IndexedDB:', err);
-        setIsDbLoaded(true);
-      });
+      } catch (err) {
+        console.error('Failed to initialize app:', err);
+        if (mounted) setIsDbLoaded(true);
+      }
+    }
+
+    initApp();
 
     return () => {
       mounted = false;
     };
   }, []);
 
-  // Listen to hashchange or popstate if user clicks a shared link while app is already open
+  // Listen to hashchange, popstate, or pageshow if user clicks a shared link while app is already open
   useEffect(() => {
     const handleUrlChange = async () => {
       try {
         const sharedDay = await decodeSharedRouteFromLocation();
         if (sharedDay) {
-          setDays((prev) => {
-            const exists = prev.some((d) => d.id === sharedDay.id);
-            return exists
-              ? prev.map((d) => (d.id === sharedDay.id ? sharedDay : d))
-              : [sharedDay, ...prev];
-          });
-          await saveDayRecord(sharedDay);
-          setActiveDayId(sharedDay.id);
-          setViewingDayId(sharedDay.id);
+          const incomingDay: DayRecord = {
+            ...sharedDay,
+            id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          };
+
+          setDays((prev) => [incomingDay, ...prev]);
+          await saveDayRecord(incomingDay);
+          await setActiveDayIdInDb(incomingDay.id);
+          setActiveDayId(incomingDay.id);
+          setViewingDayId(incomingDay.id);
           setActiveTab('route');
           showToast(
-            `🚚 تم فتح مسار التوصيل: "${sharedDay.title}" للمندوب: ${
-              sharedDay.courierName || 'المندوب'
-            }`
+            `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
           );
           try {
             window.history.replaceState(null, '', window.location.pathname);
@@ -262,10 +269,10 @@ export default function App() {
             // ignore
           }
 
-          if (!sharedDay.calculatedRoute && sharedDay.startPoint && sharedDay.orders.length > 0) {
-            calculateOptimizedRoadRoute(sharedDay.startPoint, sharedDay.orders)
+          if (incomingDay.startPoint && incomingDay.orders.length > 0) {
+            calculateOptimizedRoadRoute(incomingDay.startPoint, incomingDay.orders)
               .then(async (computedRoute) => {
-                const withRoute = { ...sharedDay, calculatedRoute: computedRoute };
+                const withRoute = { ...incomingDay, calculatedRoute: computedRoute };
                 await saveDayRecord(withRoute);
                 setDays((prev) =>
                   prev.map((d) => (d.id === withRoute.id ? withRoute : d))
@@ -281,9 +288,11 @@ export default function App() {
 
     window.addEventListener('hashchange', handleUrlChange);
     window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('pageshow', handleUrlChange);
     return () => {
       window.removeEventListener('hashchange', handleUrlChange);
       window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('pageshow', handleUrlChange);
     };
   }, []);
 

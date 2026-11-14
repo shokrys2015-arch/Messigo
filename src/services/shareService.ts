@@ -213,6 +213,8 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
     };
   });
 
+  const routableOrders = orders.filter((o) => o.coordinates !== null);
+
   const startPoint: StartPoint | null =
     micro.s &&
     typeof micro.s[0] === 'number' &&
@@ -223,11 +225,20 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
           source: 'manual',
           confirmedAt: new Date().toISOString(),
         }
+      : routableOrders.length > 0 && routableOrders[0].coordinates
+      ? {
+          coordinates: {
+            lat: routableOrders[0].coordinates.lat,
+            lng: routableOrders[0].coordinates.lng,
+          },
+          label: 'نقطة بداية التوصيل',
+          source: 'manual',
+          confirmedAt: new Date().toISOString(),
+        }
       : null;
 
-  // Reconstruct immediate calculatedRoute if startPoint and valid coordinates exist
+  // Reconstruct immediate calculatedRoute if orders exist
   let calculatedRoute: CalculatedRoute | null = null;
-  const routableOrders = orders.filter((o) => o.coordinates !== null);
 
   if (startPoint && routableOrders.length > 0) {
     let cumDist = 0;
@@ -340,7 +351,7 @@ export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promi
 
 /**
  * Generates an ultra-compact client-side URL that works on Cloudflare Pages (messigo.pages.dev)
- * without any backend server. Length is ~150-250 characters.
+ * and across all devices/accounts without relying on volatile server memory.
  */
 export async function generateClientCompactRouteUrl(day: DayRecord): Promise<string> {
   const micro = createMicroDayPayload(day);
@@ -350,32 +361,11 @@ export async function generateClientCompactRouteUrl(day: DayRecord): Promise<str
 }
 
 /**
- * Asynchronously generates an ultra-short route URL:
- * 1. Tries server storage (/api/routes/share) -> generates ~30 chars (?r=xyz)
- * 2. On static hosting like Cloudflare Pages (messigo.pages.dev), uses gzip micro-payload -> generates ~200 chars (?d=...)
- * NEVER generates the old 4,000-character string!
+ * Asynchronously generates a self-contained ultra-short route URL (?d=z_...)
+ * Works 100% reliably whether the recipient is opening the app for the first time
+ * or already has their own orders saved in their browser.
  */
 export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
-  try {
-    const payload = createCompactSharePayload(day);
-    const res = await fetch('/api/routes/share', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ day: payload }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.shortId) {
-        const origin = window.location.origin.replace(/\/+$/, '');
-        return `${origin}/?r=${data.shortId}`;
-      }
-    }
-  } catch {
-    // Expected on static hosting like Cloudflare Pages (messigo.pages.dev)
-  }
-
-  // Client-side ultra-compact compressed link (works 100% on Cloudflare Pages without server!)
   return generateClientCompactRouteUrl(day);
 }
 
