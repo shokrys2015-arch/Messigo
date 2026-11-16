@@ -454,6 +454,17 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
                           ? `مستبعد من المسار (${order.exclusionReason || order.locationStatus})`
                           : order.locationStatus}
                       </span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                          order.excludedFromRoute || !isReady
+                            ? 'bg-red-100 text-red-800 border-red-200'
+                            : order.deliveryStatus === 'تم التسليم'
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                            : 'bg-sky-100 text-sky-800 border-sky-200'
+                        }`}
+                      >
+                        {order.excludedFromRoute || !isReady ? 'مستبعد' : order.deliveryStatus}
+                      </span>
                       {order.totalPrice && (
                         <>
                           <span aria-hidden="true">·</span>
@@ -464,8 +475,13 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
                       )}
                     </div>
 
-                    <h3 className="text-lg font-bold text-slate-900">
-                      {order.customerName || 'عميل بدون اسم مستخرج'}
+                    <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                      <span>{order.customerName || 'عميل بدون اسم مستخرج'}</span>
+                      {(order.excludedFromRoute || !isReady) && (
+                        <span className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-md">
+                          مستبعد
+                        </span>
+                      )}
                     </h3>
                   </div>
 

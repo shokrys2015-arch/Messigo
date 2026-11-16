@@ -276,12 +276,17 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {orderedStops.map(({ visitNumber, order, leg }) => {
-                    const isDelivered = order.deliveryStatus === 'تم التسليم';
+                    const isExcluded = order.excludedFromRoute;
+                    const isDelivered = !isExcluded && order.deliveryStatus === 'تم التسليم';
                     return (
                       <tr
                         key={order.id}
                         className={`transition-colors print:border-b print:border-slate-200 ${
-                          isDelivered ? 'bg-emerald-50/30' : 'bg-white'
+                          isExcluded
+                            ? 'bg-red-50/30'
+                            : isDelivered
+                            ? 'bg-emerald-50/30'
+                            : 'bg-white'
                         }`}
                       >
                         <td className="py-3 px-2 text-center font-bold font-mono tabular-nums text-slate-900 align-top">
@@ -293,6 +298,7 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                         <td className="py-3 px-2.5 align-top">
                           <div className="font-bold text-slate-900 text-sm">
                             {order.customerName || 'بدون اسم'}
+                            {isExcluded ? ' (مستبعد)' : ''}
                           </div>
                           {order.phone ? (
                             <div
@@ -307,12 +313,14 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                           <div className="mt-1">
                             <span
                               className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                                isDelivered
+                                isExcluded
+                                  ? 'bg-red-100 text-red-800'
+                                  : isDelivered
                                   ? 'bg-emerald-100 text-emerald-800'
                                   : 'bg-amber-100 text-amber-800'
                               }`}
                             >
-                              {order.deliveryStatus}
+                              {isExcluded ? 'مستبعد' : order.deliveryStatus}
                             </span>
                           </div>
                         </td>

@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { DayRecord, DeliveryOrder } from '../types/messigo';
-import { formatDistanceArabic } from '../services/routingService';
+import { formatDistanceArabic, isOrderLocationReadyForRoute } from '../services/routingService';
 import { parsePriceToNumber } from './RoutePdfModal';
 
 interface DaysHistoryViewProps {
@@ -340,17 +340,26 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
             const isCurrentlyViewing = day.id === selectedViewingDayId;
             const isExpanded = expandedDayIds.has(day.id);
             const totalOrders = day.orders.length;
+            const isOrderExcludedInDay = (o: DeliveryOrder) =>
+              o.excludedFromRoute ||
+              !isOrderLocationReadyForRoute(o) ||
+              (day.calculatedRoute
+                ? !day.calculatedRoute.orderedOrderIds.includes(o.id)
+                : false);
+            const excludedCount = day.orders.filter(isOrderExcludedInDay).length;
             const deliveredOrders = day.orders.filter(
-              (o) => o.deliveryStatus === 'تم التسليم'
+              (o) => !isOrderExcludedInDay(o) && o.deliveryStatus === 'تم التسليم'
             ).length;
             const routeDistance = day.calculatedRoute
               ? formatDistanceArabic(day.calculatedRoute.totalDistanceMeters)
               : 'لم يُحسب مسار';
 
-            // Calculate total price for this day's orders
-            const dayTotalPrice = day.orders.reduce((sum, o) => {
-              return sum + parsePriceToNumber(o.totalPrice);
-            }, 0);
+            // Calculate total price for active (non-excluded) orders
+            const dayTotalPrice = day.orders
+              .filter((o) => !isOrderExcludedInDay(o))
+              .reduce((sum, o) => {
+                return sum + parsePriceToNumber(o.totalPrice);
+              }, 0);
 
             const isEditingThisCourier = editingCourierDayId === day.id;
 
@@ -465,6 +474,14 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
                           {totalOrders}
                         </strong>
                       </span>
+                      {excludedCount > 0 && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-red-700 font-bold bg-red-50 border border-red-200 px-2 py-0.5 rounded-md">
+                            مستبعد: {excludedCount}
+                          </span>
+                        </>
+                      )}
                       <span aria-hidden="true">·</span>
                       <span>
                         تم التسليم:{' '}
@@ -597,20 +614,40 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
                     ) : (
                       <div className="space-y-2">
                         {day.orders.map((order, idx) => {
-                          const isDelivered = order.deliveryStatus === 'تم التسليم';
+                          const isExcluded = isOrderExcludedInDay(order);
+                          const isDelivered = !isExcluded && order.deliveryStatus === 'تم التسليم';
+                          const exclusionNote =
+                            order.exclusionReason ||
+                            (!isOrderLocationReadyForRoute(order) ? order.locationStatus : 'مستبعد من خط السير');
+
                           return (
                             <div
                               key={order.id}
-                              className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 flex flex-wrap items-start justify-between gap-3 shadow-xs hover:border-slate-300 transition-colors"
+                              className={`border rounded-xl p-3 sm:p-4 flex flex-wrap items-start justify-between gap-3 shadow-xs transition-colors ${
+                                isExcluded
+                                  ? 'bg-red-50/40 border-red-200 hover:border-red-300'
+                                  : 'bg-white border-slate-200 hover:border-slate-300'
+                              }`}
                             >
                               <div className="flex items-start gap-3 min-w-0 flex-1">
-                                <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-700 font-mono font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                                <span
+                                  className={`w-6 h-6 rounded-full font-mono font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 ${
+                                    isExcluded
+                                      ? 'bg-red-100 text-red-700'
+                                      : 'bg-slate-100 text-slate-700'
+                                  }`}
+                                >
                                   {idx + 1}
                                 </span>
                                 <div className="space-y-1 min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className="font-bold text-slate-900 text-sm">
+                                    <span
+                                      className={`font-bold text-sm ${
+                                        isExcluded ? 'text-red-900' : 'text-slate-900'
+                                      }`}
+                                    >
                                       {order.customerName || 'بدون اسم'}
+                                      {isExcluded ? ' (مستبعد)' : ''}
                                     </span>
                                     {order.phone && (
                                       <span
@@ -622,15 +659,23 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
                                       </span>
                                     )}
                                     <span
-                                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                                        isDelivered
-                                          ? 'bg-emerald-100 text-emerald-800'
-                                          : 'bg-amber-100 text-amber-800'
+                                      className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                        isExcluded
+                                          ? 'bg-red-100 text-red-800 border-red-200'
+                                          : isDelivered
+                                          ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                          : 'bg-amber-100 text-amber-800 border-amber-200'
                                       }`}
                                     >
-                                      {order.deliveryStatus}
+                                      {isExcluded ? 'مستبعد' : order.deliveryStatus}
                                     </span>
                                   </div>
+
+                                  {isExcluded && (
+                                    <div className="text-xs font-semibold text-red-700">
+                                      سبب الاستبعاد: {exclusionNote}
+                                    </div>
+                                  )}
 
                                   <div className="text-xs text-slate-600 leading-relaxed">
                                     {order.address || order.locationText || 'بدون عنوان نصي'}

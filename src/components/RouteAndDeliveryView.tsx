@@ -785,6 +785,54 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
             );
           })}
         </div>
+
+        {/* Excluded Orders Section (shown clearly as مستبعد, never قيد الانتظار) */}
+        {(() => {
+          const routeIds = new Set(route.orderedOrderIds);
+          const excludedList = orders.filter(
+            (o) => o.excludedFromRoute || !routeIds.has(o.id)
+          );
+          if (excludedList.length === 0) return null;
+
+          return (
+            <div className="pt-6 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-base font-bold text-red-900">
+                  الأوردرات المستبعدة من خط السير ({excludedList.length})
+                </h3>
+                <span className="text-xs text-red-700 font-medium">
+                  تظهر بحالة «مستبعد» بسبب عدم اكتمال العنوان أو الموقع
+                </span>
+              </div>
+
+              <div className="space-y-2.5">
+                {excludedList.map((order, idx) => (
+                  <div
+                    key={order.id}
+                    className="bg-red-50/50 border border-red-200 rounded-2xl p-4 flex flex-wrap items-start justify-between gap-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-red-950 text-base">
+                          {order.customerName || `عميل بدون اسم #${idx + 1}`} (مستبعد)
+                        </span>
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-red-100 text-red-800 border border-red-300">
+                          مستبعد
+                        </span>
+                      </div>
+                      <p className="text-xs text-red-800 font-medium">
+                        سبب الاستبعاد: {order.exclusionReason || order.locationStatus}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        العنوان: {order.address || order.locationText || 'غير محدد'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

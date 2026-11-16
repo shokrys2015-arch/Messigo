@@ -116,22 +116,20 @@ export interface MicroDayPayload {
   k: string; // dateKey
   c?: string; // courierName
   s?: [number, number]; // startPoint coordinates [lat, lng]
-  r?: Array<[number, number]>; // optional route legs [distanceMeters, durationSeconds] in ordered sequence
   o: Array<[string, string, string, string, number | null, number | null, string?]>;
   // [customerName, phone, address, totalPrice, lat, lng, orderDetails]
 }
 
 /**
- * Creates an ultra-compact payload containing only necessary delivery info.
- * Preserves optimized route order and leg distances if a route was calculated.
+ * Creates an ultra-compact payload containing only active delivery info.
+ * Preserves optimized route order if a route was calculated and omits excluded orders.
  */
 export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
-  // If a route is calculated, order the stops according to the route sequence first
-  let orderedSourceOrders = day.orders;
-  let routeLegsCompact: Array<[number, number]> | undefined;
+  const activeOrders = day.orders.filter((ord) => !ord.excludedFromRoute);
+  let orderedSourceOrders = activeOrders;
 
   if (day.calculatedRoute && day.calculatedRoute.orderedOrderIds.length > 0) {
-    const orderMap = new Map(day.orders.map((ord) => [ord.id, ord]));
+    const orderMap = new Map(activeOrders.map((ord) => [ord.id, ord]));
     const inRoute: DeliveryOrder[] = [];
     const seenIds = new Set<string>();
 
@@ -142,25 +140,18 @@ export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
         seenIds.add(id);
       }
     }
-    const remaining = day.orders.filter((ord) => !seenIds.has(ord.id));
+    const remaining = activeOrders.filter((ord) => !seenIds.has(ord.id));
     orderedSourceOrders = [...inRoute, ...remaining];
-
-    if (day.calculatedRoute.legs.length === inRoute.length) {
-      routeLegsCompact = day.calculatedRoute.legs.map((leg) => [
-        Math.round(leg.distanceMeters),
-        Math.round(leg.durationSeconds),
-      ]);
-    }
   }
 
   const o: MicroDayPayload['o'] = orderedSourceOrders.map((ord) => [
-    ord.customerName?.trim() || '',
-    ord.phone?.trim() || '',
-    ord.address?.trim() || ord.locationText?.trim() || '',
-    ord.totalPrice?.trim() || '',
+    (ord.customerName?.trim() || '').slice(0, 35),
+    (ord.phone?.trim() || '').slice(0, 20),
+    (ord.address?.trim() || ord.locationText?.trim() || '').slice(0, 60),
+    (ord.totalPrice?.trim() || '').slice(0, 20),
     ord.coordinates?.lat ? Number(ord.coordinates.lat.toFixed(5)) : null,
     ord.coordinates?.lng ? Number(ord.coordinates.lng.toFixed(5)) : null,
-    ord.orderDetails?.trim() || '',
+    (ord.orderDetails?.trim() || '').slice(0, 40),
   ]);
 
   const s: [number, number] | undefined = day.startPoint?.coordinates
@@ -171,11 +162,10 @@ export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
     : undefined;
 
   return {
-    t: day.title?.trim() || 'مسار توصيل',
+    t: (day.title?.trim() || 'مسار توصيل').slice(0, 50),
     k: day.dateKey || new Date().toISOString().split('T')[0],
-    c: day.courierName?.trim() || undefined,
+    c: day.courierName?.trim() ? day.courierName.trim().slice(0, 35) : undefined,
     s,
-    r: routeLegsCompact,
     o,
   };
 }
@@ -241,23 +231,14 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
   let calculatedRoute: CalculatedRoute | null = null;
 
   if (startPoint && routableOrders.length > 0) {
-    let cumDist = 0;
-    let cumDur = 0;
-    const legs = routableOrders.map((ord, idx) => {
-      const compactLeg = micro.r && micro.r[idx];
-      const distanceMeters = compactLeg ? compactLeg[0] : 0;
-      const durationSeconds = compactLeg ? compactLeg[1] : 0;
-      cumDist += distanceMeters;
-      cumDur += durationSeconds;
-      return {
-        orderId: ord.id,
-        visitNumber: idx + 1,
-        distanceMeters,
-        durationSeconds,
-        cumulativeDistanceMeters: cumDist,
-        cumulativeDurationSeconds: cumDur,
-      };
-    });
+    const legs = routableOrders.map((ord, idx) => ({
+      orderId: ord.id,
+      visitNumber: idx + 1,
+      distanceMeters: 0,
+      durationSeconds: 0,
+      cumulativeDistanceMeters: 0,
+      cumulativeDurationSeconds: 0,
+    }));
 
     const geometry: [number, number][] = [
       [startPoint.coordinates.lat, startPoint.coordinates.lng],
@@ -271,8 +252,8 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
       startPoint,
       orderedOrderIds: routableOrders.map((o) => o.id),
       legs,
-      totalDistanceMeters: cumDist,
-      totalDurationSeconds: cumDur,
+      totalDistanceMeters: 0,
+      totalDurationSeconds: 0,
       geometry,
       algorithmUsed: 'exact-open-tsp',
       algorithmNote: 'تم استلام ترتيب خط السير المشترك وجاري تحديث رسم الطريق الفعلي.',
@@ -296,7 +277,30 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
 }
 
 /**
- * Compresses an object into a compact URL-safe string using browser gzip
+ * Converts standard base64 into 100% pure alphanumeric [A-Za-z0-9]
+ * (Zero underscores '_', zero hyphens '-', zero symbols) so WhatsApp NEVER
+ * breaks the link or treats underscores as italic markdown.
+ */
+function base64ToPureAlphanumeric(b64: string): string {
+  return b64
+    .replace(/=+$/, '')
+    .replace(/0/g, '00')
+    .replace(/\+/g, '01')
+    .replace(/\//g, '02');
+}
+
+function pureAlphanumericToBase64(alpha: string): string {
+  let b64 = alpha.replace(/0([012])/g, (_, d) =>
+    d === '0' ? '0' : d === '1' ? '+' : '/'
+  );
+  while (b64.length % 4 !== 0) {
+    b64 += '=';
+  }
+  return b64;
+}
+
+/**
+ * Compresses an object into a 100% alphanumeric string using browser gzip
  */
 export async function compressDataToUrlSafe(data: unknown): Promise<string> {
   const jsonStr = JSON.stringify(data);
@@ -310,16 +314,21 @@ export async function compressDataToUrlSafe(data: unknown): Promise<string> {
       for (let i = 0; i < bytes.byteLength; i++) {
         binary += String.fromCharCode(bytes[i]);
       }
-      return 'z_' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return 'z' + base64ToPureAlphanumeric(btoa(binary));
     } catch (e) {
       console.warn('Compression error, falling back to base64:', e);
     }
   }
-  return 'b_' + toBase64Utf8(jsonStr);
+  const utf8Bytes = new TextEncoder().encode(jsonStr);
+  let binary = '';
+  for (let i = 0; i < utf8Bytes.byteLength; i++) {
+    binary += String.fromCharCode(utf8Bytes[i]);
+  }
+  return 'b' + base64ToPureAlphanumeric(btoa(binary));
 }
 
 /**
- * Decompresses a URL-safe string back into an object
+ * Decompresses a URL-safe string back into an object (supports both new pure-alphanumeric and legacy z_/b_ formats)
  */
 export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promise<T | null> {
   try {
@@ -336,9 +345,28 @@ export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promi
       const decompressedStream = stream.pipeThrough(new DecompressionStream('gzip'));
       const text = await new Response(decompressedStream).text();
       return JSON.parse(text) as T;
+    } else if (encoded.startsWith('z')) {
+      const standardB64 = pureAlphanumericToBase64(encoded.slice(1));
+      const binary = atob(standardB64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const stream = new Blob([bytes]).stream();
+      const decompressedStream = stream.pipeThrough(new DecompressionStream('gzip'));
+      const text = await new Response(decompressedStream).text();
+      return JSON.parse(text) as T;
     } else if (encoded.startsWith('b_')) {
       const jsonStr = fromBase64Utf8(encoded.slice(2));
       return JSON.parse(jsonStr) as T;
+    } else if (encoded.startsWith('b')) {
+      const standardB64 = pureAlphanumericToBase64(encoded.slice(1));
+      const binary = atob(standardB64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return JSON.parse(new TextDecoder().decode(bytes)) as T;
     } else {
       const jsonStr = fromBase64Utf8(encoded);
       return JSON.parse(jsonStr) as T;
@@ -361,9 +389,8 @@ export async function generateClientCompactRouteUrl(day: DayRecord): Promise<str
 }
 
 /**
- * Asynchronously generates a self-contained ultra-short route URL (?d=z_...)
- * Works 100% reliably whether the recipient is opening the app for the first time
- * or already has their own orders saved in their browser.
+ * Asynchronously generates a self-contained ultra-short route URL (?d=z...)
+ * Uses 100% pure alphanumeric characters so WhatsApp never breaks or truncates the link.
  */
 export async function generateShortRouteUrl(day: DayRecord): Promise<string> {
   return generateClientCompactRouteUrl(day);
@@ -405,9 +432,14 @@ export async function fetchSharedRoute(shortId: string): Promise<DayRecord | nul
 export function generateShareableRouteUrl(day: DayRecord): string {
   const micro = createMicroDayPayload(day);
   const jsonStr = JSON.stringify(micro);
-  const encoded = toBase64Utf8(jsonStr);
+  const utf8Bytes = new TextEncoder().encode(jsonStr);
+  let binary = '';
+  for (let i = 0; i < utf8Bytes.byteLength; i++) {
+    binary += String.fromCharCode(utf8Bytes[i]);
+  }
+  const encoded = 'b' + base64ToPureAlphanumeric(btoa(binary));
   const origin = window.location.origin.replace(/\/+$/, '');
-  return `${origin}/?d=b_${encoded}`;
+  return `${origin}/?d=${encoded}`;
 }
 
 /**
@@ -430,7 +462,15 @@ export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
     let parsed: any = null;
     if (encodedData.startsWith('b_')) {
       parsed = JSON.parse(fromBase64Utf8(encodedData.slice(2)));
-    } else if (!encodedData.startsWith('z_')) {
+    } else if (encodedData.startsWith('b')) {
+      const standardB64 = pureAlphanumericToBase64(encodedData.slice(1));
+      const binary = atob(standardB64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } else if (!encodedData.startsWith('z')) {
       parsed = JSON.parse(fromBase64Utf8(encodedData));
     }
 
@@ -504,11 +544,13 @@ export async function decodeSharedRouteFromLocation(): Promise<DayRecord | null>
 }
 
 /**
- * Builds formatted Arabic WhatsApp message with courier details and direct link
+ * Builds formatted Arabic WhatsApp message with courier details and direct link.
+ * Avoids markdown symbols (* or _) so WhatsApp's parser never interferes with the link.
  */
 export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string {
-  const totalOrders = day.orders.length;
-  const totalPrice = day.orders.reduce((sum, o) => {
+  const activeOrders = day.orders.filter((o) => !o.excludedFromRoute);
+  const totalOrders = activeOrders.length;
+  const totalPrice = activeOrders.reduce((sum, o) => {
     return sum + parsePriceToNumber(o.totalPrice);
   }, 0);
 
@@ -516,19 +558,19 @@ export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string
     totalPrice > 0 ? `${totalPrice.toLocaleString('ar-EG')} ج.م` : 'غير محدد';
 
   const courierLine = day.courierName?.trim()
-    ? `🛵 *المندوب:* ${day.courierName.trim()}\n`
+    ? `🛵 المندوب: ${day.courierName.trim()}\n`
     : '';
 
   const cleanUrl = (shareUrl || '').trim();
 
   return (
-    `🚚 *خط سير توصيل الأوردرات*\n` +
-    `📦 *اسم الأوردر:* ${day.title}\n` +
+    `🚚 خط سير توصيل الأوردرات\n` +
+    `📦 اسم الأوردر: ${day.title}\n` +
     courierLine +
-    `📅 *التاريخ:* ${day.dateKey}\n` +
-    `📋 *عدد الشحنات:* ${totalOrders} أوردر\n` +
-    `💰 *إجمالي المطلوب تحصيله:* ${priceText}\n\n` +
-    `📍 *رابط مسار التوصيل واللوكيشنز للمندوب:*\n\n` +
-    `${cleanUrl}\n`
+    `📅 التاريخ: ${day.dateKey}\n` +
+    `📋 عدد الشحنات: ${totalOrders} أوردر\n` +
+    `💰 إجمالي المطلوب تحصيله: ${priceText}\n\n` +
+    `📍 افتح رابط مسار التوصيل للمندوب:\n` +
+    `${cleanUrl}`
   );
 }
