@@ -76,6 +76,7 @@ export function createCompactSharePayload(day: DayRecord): Partial<DayRecord> {
     duplicateWithNames: o.duplicateWithNames,
     orderDetails: o.orderDetails || '',
     totalPrice: o.totalPrice || '',
+    deliveryFee: o.deliveryFee || '',
     rawMessage: '',
     deliveryStatus: o.deliveryStatus || 'قيد الانتظار',
     deliveredAt: o.deliveredAt,
@@ -116,8 +117,8 @@ export interface MicroDayPayload {
   k: string; // dateKey
   c?: string; // courierName
   s?: [number, number]; // startPoint coordinates [lat, lng]
-  o: Array<[string, string, string, string, number | null, number | null, string?]>;
-  // [customerName, phone, address, totalPrice, lat, lng, orderDetails]
+  o: Array<[string, string, string, string, number | null, number | null, string?, string?]>;
+  // [customerName, phone, address, totalPrice (without delivery), lat, lng, orderDetails, deliveryFee]
 }
 
 /**
@@ -152,6 +153,7 @@ export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
     ord.coordinates?.lat ? Number(ord.coordinates.lat.toFixed(5)) : null,
     ord.coordinates?.lng ? Number(ord.coordinates.lng.toFixed(5)) : null,
     (ord.orderDetails?.trim() || '').slice(0, 40),
+    (ord.deliveryFee?.trim() || '').slice(0, 20),
   ]);
 
   const s: [number, number] | undefined = day.startPoint?.coordinates
@@ -196,6 +198,7 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
       locationConfirmedByUser: true,
       orderDetails: tuple[6] || '',
       totalPrice: tuple[3] || '',
+      deliveryFee: tuple[7] || '',
       rawMessage: '',
       deliveryStatus: 'قيد الانتظار',
       excludedFromRoute: false,
@@ -550,12 +553,17 @@ export async function decodeSharedRouteFromLocation(): Promise<DayRecord | null>
 export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string {
   const activeOrders = day.orders.filter((o) => !o.excludedFromRoute);
   const totalOrders = activeOrders.length;
-  const totalPrice = activeOrders.reduce((sum, o) => {
+  const totalOrderNetPrice = activeOrders.reduce((sum, o) => {
     return sum + parsePriceToNumber(o.totalPrice);
   }, 0);
+  const totalDeliveryFee = activeOrders.reduce((sum, o) => {
+    return sum + parsePriceToNumber(o.deliveryFee);
+  }, 0);
 
-  const priceText =
-    totalPrice > 0 ? `${totalPrice.toLocaleString('ar-EG')} ج.م` : 'غير محدد';
+  const orderPriceText =
+    totalOrderNetPrice > 0 ? `${totalOrderNetPrice.toLocaleString('ar-EG')} ج.م` : '0 ج.م';
+  const deliveryFeeText =
+    totalDeliveryFee > 0 ? `${totalDeliveryFee.toLocaleString('ar-EG')} ج.م` : '0 ج.م';
 
   const courierLine = day.courierName?.trim()
     ? `🛵 المندوب: ${day.courierName.trim()}\n`
@@ -569,7 +577,8 @@ export function buildWhatsappShareText(day: DayRecord, shareUrl: string): string
     courierLine +
     `📅 التاريخ: ${day.dateKey}\n` +
     `📋 عدد الشحنات: ${totalOrders} أوردر\n` +
-    `💰 إجمالي المطلوب تحصيله: ${priceText}\n\n` +
+    `💵 إجمالي الأوردرات (بدون الدليفري): ${orderPriceText}\n` +
+    `🛵 إجمالي سعر الدليفري: ${deliveryFeeText}\n\n` +
     `📍 افتح رابط مسار التوصيل للمندوب:\n` +
     `${cleanUrl}`
   );

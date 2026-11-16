@@ -354,12 +354,16 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
               ? formatDistanceArabic(day.calculatedRoute.totalDistanceMeters)
               : 'لم يُحسب مسار';
 
-            // Calculate total price for active (non-excluded) orders
-            const dayTotalPrice = day.orders
-              .filter((o) => !isOrderExcludedInDay(o))
-              .reduce((sum, o) => {
-                return sum + parsePriceToNumber(o.totalPrice);
-              }, 0);
+            // Calculate two separate totals for active (non-excluded) orders:
+            // 1) إجمالي الأوردرات بدون الدليفري
+            // 2) إجمالي سعر الدليفري
+            const activeDayOrders = day.orders.filter((o) => !isOrderExcludedInDay(o));
+            const dayOrdersNetTotal = activeDayOrders.reduce((sum, o) => {
+              return sum + parsePriceToNumber(o.totalPrice);
+            }, 0);
+            const dayDeliveryFeeTotal = activeDayOrders.reduce((sum, o) => {
+              return sum + parsePriceToNumber(o.deliveryFee);
+            }, 0);
 
             const isEditingThisCourier = editingCourierDayId === day.id;
 
@@ -491,9 +495,16 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>
-                        إجمالي التحصيل:{' '}
+                        الأوردرات (بدون دليفري):{' '}
                         <strong className="font-mono tabular-nums text-sky-800 font-bold">
-                          {dayTotalPrice > 0 ? `${dayTotalPrice.toLocaleString('ar-EG')} ج.م` : 'غير محدد'}
+                          {dayOrdersNetTotal > 0 ? `${dayOrdersNetTotal.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
+                        </strong>
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        إجمالي الدليفري:{' '}
+                        <strong className="font-mono tabular-nums text-amber-800 font-bold">
+                          {dayDeliveryFeeTotal > 0 ? `${dayDeliveryFeeTotal.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
                         </strong>
                       </span>
                       <span aria-hidden="true">·</span>
@@ -687,12 +698,24 @@ export const DaysHistoryView: React.FC<DaysHistoryViewProps> = ({
                                     </div>
                                   )}
 
-                                  {order.totalPrice && (
-                                    <div className="text-xs font-bold text-slate-900">
-                                      المطلوب:{' '}
-                                      <span className="font-mono tabular-nums text-sky-700">
-                                        {order.totalPrice}
-                                      </span>
+                                  {(order.totalPrice || order.deliveryFee) && (
+                                    <div className="flex flex-wrap items-center gap-3 text-xs font-bold pt-0.5">
+                                      {order.totalPrice && (
+                                        <span className="text-slate-900">
+                                          الأوردر (بدون دليفري):{' '}
+                                          <span className="font-mono tabular-nums text-sky-700">
+                                            {order.totalPrice}
+                                          </span>
+                                        </span>
+                                      )}
+                                      {order.deliveryFee && (
+                                        <span className="text-slate-900">
+                                          سعر الدليفري:{' '}
+                                          <span className="font-mono tabular-nums text-amber-700">
+                                            {order.deliveryFee}
+                                          </span>
+                                        </span>
+                                      )}
                                     </div>
                                   )}
                                 </div>

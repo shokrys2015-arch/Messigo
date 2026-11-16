@@ -28,7 +28,8 @@ export interface DeliveryOrder {
   hasDuplicateLocation?: boolean;
   duplicateWithNames?: string[];
   orderDetails: string;
-  totalPrice: string;
+  totalPrice: string; // سعر الأوردر بدون الدليفري
+  deliveryFee?: string; // سعر الدليفري منفصل
   rawMessage: string;
   deliveryStatus: DeliveryStatus;
   deliveredAt?: string;

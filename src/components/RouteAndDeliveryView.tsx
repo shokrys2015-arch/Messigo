@@ -22,6 +22,7 @@ import {
   formatDurationArabic,
 } from '../services/routingService';
 import { calculateDistanceMetersBetweenCoords } from '../services/geocodingService';
+import { parsePriceToNumber } from './RoutePdfModal';
 
 interface RouteAndDeliveryViewProps {
   orders: DeliveryOrder[];
@@ -76,6 +77,16 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
     (item) => item.order.deliveryStatus === 'تم التسليم'
   ).length;
   const remainingCount = orderedVisitItems.length - deliveredCount;
+
+  // Two separate sums across route stops: 1) Order price without delivery, 2) Delivery fee
+  const totalOrdersNetSum = orderedVisitItems.reduce(
+    (sum, item) => sum + parsePriceToNumber(item.order.totalPrice),
+    0
+  );
+  const totalDeliveryFeeSum = orderedVisitItems.reduce(
+    (sum, item) => sum + parsePriceToNumber(item.order.deliveryFee),
+    0
+  );
 
   // Current Order = First undelivered order in sequence
   const currentActiveIndex = orderedVisitItems.findIndex(
@@ -423,6 +434,28 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Two Separate Financial Sums: Orders without Delivery vs Delivery Fees */}
+        {(totalOrdersNetSum > 0 || totalDeliveryFeeSum > 0) && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div className="p-3.5 bg-sky-50/80 border border-sky-200 rounded-xl flex items-center justify-between">
+              <span className="text-xs sm:text-sm font-bold text-sky-950">
+                إجمالي الأوردرات (بدون الدليفري):
+              </span>
+              <span className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-sky-800">
+                {totalOrdersNetSum.toLocaleString('ar-EG')} ج.م
+              </span>
+            </div>
+            <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl flex items-center justify-between">
+              <span className="text-xs sm:text-sm font-bold text-amber-950">
+                إجمالي سعر الدليفري:
+              </span>
+              <span className="text-base sm:text-lg font-extrabold font-mono tabular-nums text-amber-800">
+                {totalDeliveryFeeSum.toLocaleString('ar-EG')} ج.م
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Section 10: «التوصيل الحالي» */}
@@ -488,8 +521,13 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
                     <span>الطلب: {currentDeliveryItem.order.orderDetails}</span>
                   )}
                   {currentDeliveryItem.order.totalPrice && (
-                    <span className="font-bold text-slate-900">
-                      الإجمالي: {currentDeliveryItem.order.totalPrice}
+                    <span className="font-bold text-sky-900">
+                      الأوردر (بدون دليفري): {currentDeliveryItem.order.totalPrice}
+                    </span>
+                  )}
+                  {currentDeliveryItem.order.deliveryFee && (
+                    <span className="font-bold text-amber-900">
+                      سعر الدليفري: {currentDeliveryItem.order.deliveryFee}
                     </span>
                   )}
                 </div>
@@ -685,8 +723,16 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
                         {order.totalPrice && (
                           <>
                             <span aria-hidden="true">·</span>
-                            <span className="font-semibold text-slate-800">
-                              الإجمالي: {order.totalPrice}
+                            <span className="font-semibold text-sky-800">
+                              الأوردر (بدون دليفري): {order.totalPrice}
+                            </span>
+                          </>
+                        )}
+                        {order.deliveryFee && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-amber-800">
+                              سعر الدليفري: {order.deliveryFee}
                             </span>
                           </>
                         )}

@@ -70,28 +70,35 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     };
   }, [isOpen, day]);
 
-  // Compute WhatsApp text and stats
-  const { whatsappText, totalPrice, deliveredOrders } = useMemo(() => {
+  // Compute WhatsApp text and two separate totals
+  const { whatsappText, totalOrdersNetPrice, totalDeliveryFee, deliveredOrders } = useMemo(() => {
     if (!day) {
       return {
         whatsappText: '',
-        totalPrice: 0,
+        totalOrdersNetPrice: 0,
+        totalDeliveryFee: 0,
         deliveredOrders: 0,
       };
     }
 
+    const activeOrders = day.orders.filter((o) => !o.excludedFromRoute);
     const text = buildWhatsappShareText(day, shortUrl || '...');
-    const price = day.orders.reduce(
+    const netPrice = activeOrders.reduce(
       (sum, o) => sum + parsePriceToNumber(o.totalPrice),
       0
     );
-    const delivered = day.orders.filter(
+    const delFee = activeOrders.reduce(
+      (sum, o) => sum + parsePriceToNumber(o.deliveryFee),
+      0
+    );
+    const delivered = activeOrders.filter(
       (o) => o.deliveryStatus === 'تم التسليم'
     ).length;
 
     return {
       whatsappText: text,
-      totalPrice: price,
+      totalOrdersNetPrice: netPrice,
+      totalDeliveryFee: delFee,
       deliveredOrders: delivered,
     };
   }, [day, shortUrl]);
@@ -247,7 +254,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
               </span>
             </div>
 
-            {/* Stats row */}
+            {/* Stats row: 2 separate financial totals + shipments count */}
             <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/60 text-center">
               <div className="bg-white rounded-xl p-2 border border-slate-200/80">
                 <div className="text-[11px] text-slate-500 font-medium">عدد الشحنات</div>
@@ -255,16 +262,20 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
                   {totalOrders}
                 </div>
               </div>
-              <div className="bg-white rounded-xl p-2 border border-slate-200/80">
-                <div className="text-[11px] text-slate-500 font-medium">المطلوب تحصيله</div>
-                <div className="text-sm font-bold text-emerald-700 font-mono">
-                  {totalPrice > 0 ? `${totalPrice.toLocaleString('ar-EG')} ج.م` : 'غير محدد'}
+              <div className="bg-white rounded-xl p-2 border border-sky-200/80">
+                <div className="text-[10px] text-sky-800 font-bold">الأوردرات (بدون دليفري)</div>
+                <div className="text-sm font-bold text-sky-700 font-mono">
+                  {totalOrdersNetPrice > 0
+                    ? `${totalOrdersNetPrice.toLocaleString('ar-EG')} ج.م`
+                    : '0 ج.م'}
                 </div>
               </div>
-              <div className="bg-white rounded-xl p-2 border border-slate-200/80">
-                <div className="text-[11px] text-slate-500 font-medium">تم تسليمه</div>
-                <div className="text-base font-bold text-sky-700 font-mono">
-                  {deliveredOrders}/{totalOrders}
+              <div className="bg-white rounded-xl p-2 border border-amber-200/80">
+                <div className="text-[10px] text-amber-800 font-bold">إجمالي الدليفري</div>
+                <div className="text-sm font-bold text-amber-700 font-mono">
+                  {totalDeliveryFee > 0
+                    ? `${totalDeliveryFee.toLocaleString('ar-EG')} ج.م`
+                    : '0 ج.م'}
                 </div>
               </div>
             </div>

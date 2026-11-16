@@ -275,6 +275,7 @@ export function parseSingleOrderMessage(
   let coordinates: Coordinates | null = null;
   let hasInvalidCoordinates = false;
   let totalPrice = '';
+  let deliveryFee = '';
   const detailLines: string[] = [];
 
   const consumedLineIndices = new Set<number>();
@@ -420,28 +421,167 @@ export function parseSingleOrderMessage(
     }
   });
 
-  // 4. Extract Total Price / Cost (الإجمالي / السعر / المبلغ)
+  // 4. Extract Order Price (without delivery) & Delivery Fee separately
+  // Never combine or double-count "السعر" and "الإجمالي" together!
+  const extractFirstNumber = (str: string): number | null => {
+    const norm = normalizeDigits(str).replace(/,/g, '');
+    const m = norm.match(/(\d+(?:\.\d+)?)/);
+    if (!m) return null;
+    const val = parseFloat(m[1]);
+    return Number.isFinite(val) ? val : null;
+  };
+
+  let explicitOrderPriceNum: number | null = null;
+  let explicitOrderPriceRaw = '';
+  let explicitGrandTotalNum: number | null = null;
+  let explicitGrandTotalRaw = '';
+  let extractedDeliveryFeeNum: number | null = null;
+  let extractedDeliveryFeeRaw = '';
+
   rawLines.forEach((line, idx) => {
     if (consumedLineIndices.has(idx)) return;
     const normLine = normalizeDigits(line);
 
-    const labeledPriceMatch = line.match(
-      /^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|سعر الطلب|المبلغ|المطلوب|الحساب|التكلفة|تحصيل)\s*[:：.-]?\s*(.+)$/i
-    );
-    if (labeledPriceMatch) {
-      totalPrice = labeledPriceMatch[1].replace(/^[:：.,\s-]+/, '').trim();
-      consumedLineIndices.add(idx);
+    // Avoid matching address lines like "عنوان التوصيل" or "مكان التوصيل"
+    if (/^(?:عنوان التوصيل|مكان التوصيل|العنوان|الموقع|لوكيشن)/i.test(normLine)) {
       return;
     }
 
+    // Case A: Inline "X + Y دليفري" or "السعر X + دليفري Y"
+    const inlinePlusDeliveryMatch = normLine.match(
+      /(?:^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|السعر|سعر الطلب|سعر الأوردر|سعر الاوردر|المطلوب|الحساب)\s*[:：.-]?\s*)?(\d+(?:\.\d+)?)\s*(?:جنيه|ج\.م|جم|جنية|ج)?\s*\+\s*(?:(?:دليفري|الدليفري|ديليفري|توصيل|شحن|مصاريف التوصيل|سعر الدليفري)\s*[:：.-]?\s*)?(\d+(?:\.\d+)?)\s*(?:جنيه|ج\.م|جم|جنية|ج)?(?:\s*(?:دليفري|الدليفري|ديليفري|توصيل|شحن))?/i
+    );
     if (
-      !totalPrice &&
+      inlinePlusDeliveryMatch &&
+      /(?:دليفري|الدليفري|ديليفري|توصيل|شحن)/i.test(normLine)
+    ) {
+      const ordNum = parseFloat(inlinePlusDeliveryMatch[1]);
+      const delNum = parseFloat(inlinePlusDeliveryMatch[2]);
+      if (Number.isFinite(ordNum) && Number.isFinite(delNum)) {
+        explicitOrderPriceNum = ordNum;
+        explicitOrderPriceRaw = `${ordNum} جنيه`;
+        extractedDeliveryFeeNum = delNum;
+        extractedDeliveryFeeRaw = `${delNum} جنيه`;
+        consumedLineIndices.add(idx);
+        return;
+      }
+    }
+
+    // Case B: Inline "الإجمالي X شامل Y دليفري"
+    const inlineIncludedDeliveryMatch = normLine.match(
+      /(?:الإجمالي|الاجمالي|إجمالي|اجمالي|المطلوب|الحساب)?\s*[:：.-]?\s*(\d+(?:\.\d+)?)\s*(?:جنيه|ج\.م|جم|جنية|ج)?\s*(?:شامل|منهم|يتضمن)\s*(?:دليفري|الدليفري|توصيل|شحن)?\s*(\d+(?:\.\d+)?)\s*(?:جنيه|ج\.م|جم|جنية|ج)?\s*(?:دليفري|الدليفري|توصيل|شحن)?/i
+    );
+    if (
+      inlineIncludedDeliveryMatch &&
+      /(?:دليفري|الدليفري|ديليفري|توصيل|شحن)/i.test(normLine)
+    ) {
+      const totNum = parseFloat(inlineIncludedDeliveryMatch[1]);
+      const delNum = parseFloat(inlineIncludedDeliveryMatch[2]);
+      if (Number.isFinite(totNum) && Number.isFinite(delNum)) {
+        explicitGrandTotalNum = totNum;
+        explicitGrandTotalRaw = `${totNum} جنيه`;
+        extractedDeliveryFeeNum = delNum;
+        extractedDeliveryFeeRaw = `${delNum} جنيه`;
+        consumedLineIndices.add(idx);
+        return;
+      }
+    }
+
+    // Case C: Standalone Delivery Fee line (e.g. "دليفري: 60 جنيه" or "سعر الدليفري 50" or "60 جنيه دليفري")
+    const deliveryLineMatch =
+      normLine.match(
+        /^(?:سعر الدليفري|سعر الديليفري|مصاريف الدليفري|مصاريف التوصيل|مصاريف الشحن|خدمة التوصيل|سعر التوصيل|الدليفري|دليفري|الديليفري|ديليفري|التوصيل|توصيل|الشحن|شحن)\s*[:：.-]?\s*(\d+(?:\.\d+)?\s*(?:جنيه|ج\.م|جم|جنية|ج|EGP)?)$/i
+      ) ||
+      normLine.match(
+        /^(\d+(?:\.\d+)?\s*(?:جنيه|ج\.م|جم|جنية|ج|EGP)?)\s*(?:دليفري|الدليفري|ديليفري|توصيل|مصاريف توصيل|شحن)$/i
+      );
+    if (deliveryLineMatch) {
+      const valStr = deliveryLineMatch[1].trim();
+      const num = extractFirstNumber(valStr);
+      if (num !== null) {
+        extractedDeliveryFeeNum = num;
+        extractedDeliveryFeeRaw = /\d\s*(?:جنيه|ج\.م|جم|جنية)/.test(valStr)
+          ? valStr
+          : `${num} جنيه`;
+        consumedLineIndices.add(idx);
+        return;
+      }
+    }
+
+    // Case D: Explicit Order Price WITHOUT delivery (e.g. "السعر: 500" or "سعر الأوردر: 500" or "سعر الطلب: 500")
+    const orderPriceMatch = line.match(
+      /^(?:السعر|سعر الأوردر|سعر الاوردر|سعر الطلب|قيمة الأوردر|قيمة الطلب|ثمن الأوردر|حساب الأوردر|حساب الاوردر|الأوردر بدون دليفري|الاوردر بدون دليفري)\s*[:：.-]?\s*(.+)$/i
+    );
+    if (orderPriceMatch) {
+      const cleaned = orderPriceMatch[1].replace(/^[:：.,\s-]+/, '').trim();
+      const num = extractFirstNumber(cleaned);
+      if (num !== null) {
+        explicitOrderPriceNum = num;
+        explicitOrderPriceRaw = cleaned;
+        consumedLineIndices.add(idx);
+        return;
+      }
+    }
+
+    // Case E: Explicit Grand Total line (e.g. "الإجمالي: 560" or "المطلوب: 560" or "الحساب: 560")
+    const grandTotalMatch = line.match(
+      /^(?:الإجمالي|الاجمالي|إجمالي|اجمالي|المبلغ|المطلوب|الحساب|التكلفة|تحصيل|التوتال|توتال)\s*[:：.-]?\s*(.+)$/i
+    );
+    if (grandTotalMatch) {
+      const cleaned = grandTotalMatch[1].replace(/^[:：.,\s-]+/, '').trim();
+      const num = extractFirstNumber(cleaned);
+      if (num !== null) {
+        explicitGrandTotalNum = num;
+        explicitGrandTotalRaw = cleaned;
+        consumedLineIndices.add(idx);
+        return;
+      }
+    }
+
+    // Case F: Standalone currency line (e.g. "1500 جنيه")
+    if (
+      explicitOrderPriceNum === null &&
+      explicitGrandTotalNum === null &&
       /^\s*[٠-٩0-9.,]+\s*(?:جنيه|ج\.م|جم|جنية|ريال|ر\.س|درهم|دولار|EGP|SAR)\s*$/i.test(normLine)
     ) {
-      totalPrice = line.trim();
-      consumedLineIndices.add(idx);
+      const num = extractFirstNumber(normLine);
+      if (num !== null) {
+        explicitOrderPriceNum = num;
+        explicitOrderPriceRaw = line.trim();
+        consumedLineIndices.add(idx);
+      }
     }
   });
+
+  // Resolve final Order Price (without delivery) and Delivery Fee without ever double-counting السعر + الإجمالي:
+  if (extractedDeliveryFeeRaw) {
+    deliveryFee = extractedDeliveryFeeRaw;
+  }
+
+  if (explicitOrderPriceNum !== null) {
+    // When explicit "السعر" (order price) is present, use it directly and ignore "الإجمالي" so they are never combined
+    totalPrice = explicitOrderPriceRaw;
+    // If deliveryFee wasn't on its own line, but Grand Total > Order Price, infer delivery fee = Grand Total - Order Price
+    if (
+      extractedDeliveryFeeNum === null &&
+      explicitGrandTotalNum !== null &&
+      explicitGrandTotalNum > explicitOrderPriceNum
+    ) {
+      const diff = Number((explicitGrandTotalNum - explicitOrderPriceNum).toFixed(2));
+      deliveryFee = `${diff} جنيه`;
+    }
+  } else if (explicitGrandTotalNum !== null) {
+    // Only "الإجمالي" was provided: if delivery fee was also provided and Grand Total > Delivery Fee, subtract delivery fee to get Order Price without delivery!
+    if (
+      extractedDeliveryFeeNum !== null &&
+      explicitGrandTotalNum > extractedDeliveryFeeNum
+    ) {
+      const netOrder = Number((explicitGrandTotalNum - extractedDeliveryFeeNum).toFixed(2));
+      totalPrice = `${netOrder} جنيه`;
+    } else {
+      totalPrice = explicitGrandTotalRaw;
+    }
+  }
 
   // 5. Extract Explicit Location ("الموقع:") & Explicit Address ("العنوان:")
   for (let idx = 0; idx < rawLines.length; idx++) {
@@ -585,6 +725,26 @@ export function parseSingleOrderMessage(
     consumedLineIndices.add(idx);
   });
 
+  // If no explicit order price or grand total was found, check if detailLines end with item prices (e.g. "١ علبة سابليه 450 جنيه")
+  if (!totalPrice && detailLines.length > 0) {
+    let itemsSum = 0;
+    for (const dLine of detailLines) {
+      const normD = normalizeDigits(dLine).replace(/,/g, '');
+      const itemPriceMatch = normD.match(
+        /(?:[:：\-–—]|\s)(\d{2,5}(?:\.\d+)?)\s*(?:جنيه|ج\.م|جم|جنية|ج|EGP)?\s*$/i
+      );
+      if (itemPriceMatch) {
+        const val = parseFloat(itemPriceMatch[1]);
+        if (Number.isFinite(val) && val >= 10) {
+          itemsSum += val;
+        }
+      }
+    }
+    if (itemsSum > 0) {
+      totalPrice = `${Number(itemsSum.toFixed(2))} جنيه`;
+    }
+  }
+
   // Assemble full address: Primary Geographic Address first, followed by Sub-Address (Floor/Apt)
   const fullAddress = [...mainAddressParts, ...subAddressParts].join(' — ').trim();
   const primaryGeographicAddress = mainAddressParts.join('، ').trim();
@@ -630,6 +790,7 @@ export function parseSingleOrderMessage(
     reviewNote,
     orderDetails: detailLines.join(' ، '),
     totalPrice: totalPrice || '',
+    deliveryFee: deliveryFee || '',
     rawMessage: rawBlock.trim(),
     deliveryStatus: 'قيد الانتظار',
     excludedFromRoute: false,

@@ -62,12 +62,18 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
         .filter((item): item is NonNullable<typeof item> => item !== null)
     : orders.map((order, idx) => ({ visitNumber: idx + 1, order, leg: null }));
 
-  const deliveredCount = orders.filter((o) => o.deliveryStatus === 'تم التسليم').length;
-  const remainingCount = orders.length - deliveredCount;
+  const activeOrders = orders.filter((o) => !o.excludedFromRoute);
+  const deliveredCount = activeOrders.filter((o) => o.deliveryStatus === 'تم التسليم').length;
+  const remainingCount = activeOrders.length - deliveredCount;
 
-  // Calculate total monetary collection from prices with Arabic numeral support
-  const totalAmountNumber = orders.reduce((sum, o) => {
+  // Two separate financial sums:
+  // 1) إجمالي الأوردرات (بدون الدليفري)
+  // 2) إجمالي سعر الدليفري
+  const totalOrdersNetAmount = activeOrders.reduce((sum, o) => {
     return sum + parsePriceToNumber(o.totalPrice);
+  }, 0);
+  const totalDeliveryFeeAmount = activeOrders.reduce((sum, o) => {
+    return sum + parsePriceToNumber(o.deliveryFee);
   }, 0);
 
   const handlePrint = () => {
@@ -75,7 +81,7 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
   };
 
   const handleCopyWhatsappManifest = () => {
-    let manifestText = `📋 *بيان توزيع أوردرات: ${dayTitle}*\n`;
+    let manifestText = `📋 بيان توزيع أوردرات: ${dayTitle}\n`;
     manifestText += `📅 التاريخ: ${dateKey}\n`;
     if (courierName?.trim()) {
       manifestText += `🛵 اسم المندوب: ${courierName.trim()}\n`;
@@ -84,15 +90,18 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
       manifestText += `📍 نقطة البداية: ${route.startPoint.label}\n`;
       manifestText += `🚗 إجمالي المسافة: ${formatDistanceArabic(route.totalDistanceMeters)} | الوقت: ${formatDurationArabic(route.totalDurationSeconds)}\n`;
     }
-    manifestText += `📦 عدد الأوردرات: ${orders.length} | إجمالي التحصيل: ${totalAmountNumber > 0 ? `${totalAmountNumber.toLocaleString('ar-EG')} ج.م` : 'غير محدد'}\n`;
+    manifestText += `📦 عدد الأوردرات: ${activeOrders.length}\n`;
+    manifestText += `💵 إجمالي الأوردرات (بدون الدليفري): ${totalOrdersNetAmount > 0 ? `${totalOrdersNetAmount.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}\n`;
+    manifestText += `🛵 إجمالي سعر الدليفري: ${totalDeliveryFeeAmount > 0 ? `${totalDeliveryFeeAmount.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}\n`;
     manifestText += `────────────────────\n\n`;
 
     orderedStops.forEach(({ visitNumber, order, leg }) => {
-      manifestText += `*محطة (${visitNumber})*: ${order.customerName || 'بدون اسم'}\n`;
+      manifestText += `محطة (${visitNumber}): ${order.customerName || 'بدون اسم'}\n`;
       if (order.phone) manifestText += `📞 تليفون: ${order.phone}\n`;
       manifestText += `🏠 العنوان: ${order.address || 'بدون عنوان نصي'}\n`;
       if (order.orderDetails) manifestText += `📦 الطلب: ${order.orderDetails}\n`;
-      if (order.totalPrice) manifestText += `💰 المبلغ المطلوب: ${order.totalPrice}\n`;
+      if (order.totalPrice) manifestText += `💵 سعر الأوردر (بدون دليفري): ${order.totalPrice}\n`;
+      if (order.deliveryFee) manifestText += `🛵 سعر الدليفري: ${order.deliveryFee}\n`;
       if (leg) manifestText += `🛣️ المسافة من المحطة السابقة: ${formatDistanceArabic(leg.distanceMeters)}\n`;
       if (order.mapUrl) manifestText += `🗺️ اللوكيشن: ${order.mapUrl}\n`;
       manifestText += `\n`;
@@ -224,16 +233,25 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl print:border-slate-300">
               <div className="text-[11px] font-medium text-slate-500">إجمالي الأوردرات</div>
               <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
-                {orders.length} أوردر
+                {activeOrders.length} أوردر
               </div>
             </div>
 
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl print:border-slate-300">
-              <div className="text-[11px] font-medium text-slate-500">إجمالي التحصيل المقدر</div>
-              <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
-                {totalAmountNumber > 0
-                  ? `${totalAmountNumber.toLocaleString('ar-EG')} ج.م`
-                  : 'حسب الفاتورة'}
+            <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl print:border-slate-300">
+              <div className="text-[11px] font-bold text-sky-900">الأوردرات (بدون الدليفري)</div>
+              <div className="text-lg font-bold font-mono tabular-nums text-sky-900 mt-0.5">
+                {totalOrdersNetAmount > 0
+                  ? `${totalOrdersNetAmount.toLocaleString('ar-EG')} ج.م`
+                  : '0 ج.م'}
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl print:border-slate-300">
+              <div className="text-[11px] font-bold text-amber-900">إجمالي سعر الدليفري</div>
+              <div className="text-lg font-bold font-mono tabular-nums text-amber-900 mt-0.5">
+                {totalDeliveryFeeAmount > 0
+                  ? `${totalDeliveryFeeAmount.toLocaleString('ar-EG')} ج.م`
+                  : '0 ج.م'}
               </div>
             </div>
 
@@ -241,13 +259,6 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
               <div className="text-[11px] font-medium text-slate-500">مسافة خط السير</div>
               <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
                 {route ? formatDistanceArabic(route.totalDistanceMeters) : 'غير محسوب'}
-              </div>
-            </div>
-
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl print:border-slate-300">
-              <div className="text-[11px] font-medium text-slate-500">زمن القيادة المقدر</div>
-              <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
-                {route ? formatDurationArabic(route.totalDurationSeconds) : 'غير محسوب'}
               </div>
             </div>
           </div>
@@ -268,10 +279,11 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                     <th className="py-2.5 px-2 font-bold w-10 text-center">#</th>
                     <th className="py-2.5 px-2.5 font-bold w-36">العميل والتواصل</th>
                     <th className="py-2.5 px-2.5 font-bold">العنوان التفصيلي ومكان التسليم</th>
-                    <th className="py-2.5 px-2.5 font-bold w-44">الطلب والأصناف</th>
-                    <th className="py-2.5 px-2 font-bold w-24 text-center">المطلوب</th>
-                    <th className="py-2.5 px-2 font-bold w-24 text-center">المسافة</th>
-                    <th className="py-2.5 px-2 font-bold w-24 text-center">توقيع المستلم</th>
+                    <th className="py-2.5 px-2.5 font-bold w-40">الطلب والأصناف</th>
+                    <th className="py-2.5 px-2 font-bold w-24 text-center">الأوردر (بدون دليفري)</th>
+                    <th className="py-2.5 px-2 font-bold w-24 text-center">سعر الدليفري</th>
+                    <th className="py-2.5 px-2 font-bold w-20 text-center">المسافة</th>
+                    <th className="py-2.5 px-2 font-bold w-20 text-center">توقيع المستلم</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -348,9 +360,17 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                           )}
                         </td>
 
-                        <td className="py-3 px-2 text-center align-top font-bold font-mono tabular-nums text-slate-900">
+                        <td className="py-3 px-2 text-center align-top font-bold font-mono tabular-nums text-sky-900">
                           {order.totalPrice ? (
                             <span>{order.totalPrice}</span>
+                          ) : (
+                            <span className="text-slate-400 font-normal">-</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-2 text-center align-top font-bold font-mono tabular-nums text-amber-900">
+                          {order.deliveryFee ? (
+                            <span>{order.deliveryFee}</span>
                           ) : (
                             <span className="text-slate-400 font-normal">-</span>
                           )}
@@ -370,15 +390,20 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
                 <tfoot>
                   <tr className="border-t-2 border-slate-900 bg-slate-100/90 text-slate-900 font-extrabold print:bg-slate-200">
                     <td colSpan={4} className="py-3 px-3 text-right">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm">إجمالي المطلوب تحصيله من العملاء:</span>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
+                        <span className="text-sm">إجمالي التجميعتين (الأوردر بدون الدليفري / سعر الدليفري):</span>
                         <span className="text-xs text-slate-500 font-normal">
-                          (مجموع جميع أوردرات الرحلة - {orders.length} أوردر)
+                          ({activeOrders.length} أوردر)
                         </span>
                       </div>
                     </td>
                     <td className="py-3 px-2 text-center font-mono text-sm tabular-nums text-sky-800 font-black border-x border-slate-300">
-                      {totalAmountNumber > 0 ? `${totalAmountNumber.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
+                      <div className="text-[10px] text-slate-500 font-bold mb-0.5">الأوردر بدون دليفري</div>
+                      {totalOrdersNetAmount > 0 ? `${totalOrdersNetAmount.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
+                    </td>
+                    <td className="py-3 px-2 text-center font-mono text-sm tabular-nums text-amber-800 font-black border-x border-slate-300">
+                      <div className="text-[10px] text-slate-500 font-bold mb-0.5">إجمالي الدليفري</div>
+                      {totalDeliveryFeeAmount > 0 ? `${totalDeliveryFeeAmount.toLocaleString('ar-EG')} ج.م` : '0 ج.م'}
                     </td>
                     <td className="py-3 px-2 text-center font-mono text-xs text-slate-700 tabular-nums">
                       {route ? formatDistanceArabic(route.totalDistanceMeters) : '-'}

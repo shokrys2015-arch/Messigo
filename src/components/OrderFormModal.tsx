@@ -27,6 +27,7 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
   const [lngStr, setLngStr] = useState('');
   const [orderDetails, setOrderDetails] = useState('');
   const [totalPrice, setTotalPrice] = useState('');
+  const [deliveryFee, setDeliveryFee] = useState('');
   const [excludedFromRoute, setExcludedFromRoute] = useState(false);
   const [exclusionReason, setExclusionReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -44,6 +45,7 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
       setLngStr(initialOrder.coordinates ? String(initialOrder.coordinates.lng) : '');
       setOrderDetails(initialOrder.orderDetails);
       setTotalPrice(initialOrder.totalPrice);
+      setDeliveryFee(initialOrder.deliveryFee || '');
       setExcludedFromRoute(initialOrder.excludedFromRoute);
       setExclusionReason(initialOrder.exclusionReason || '');
     } else {
@@ -56,6 +58,7 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
       setLngStr('');
       setOrderDetails('');
       setTotalPrice('');
+      setDeliveryFee('');
       setExcludedFromRoute(false);
       setExclusionReason('');
     }
@@ -140,9 +143,10 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
       reviewNote,
       orderDetails: orderDetails.trim(),
       totalPrice: totalPrice.trim(),
+      deliveryFee: deliveryFee.trim(),
       rawMessage:
         initialOrder?.rawMessage ||
-        `${customerName}\nت: ${phone}\n${address}\n${orderDetails}\nالإجمالي: ${totalPrice}`.trim(),
+        `${customerName}\nت: ${phone}\n${address}\n${orderDetails}\nالسعر: ${totalPrice}\nدليفري: ${deliveryFee}`.trim(),
       deliveryStatus: initialOrder?.deliveryStatus || 'قيد الانتظار',
       deliveredAt: initialOrder?.deliveredAt,
       excludedFromRoute,
@@ -220,7 +224,7 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="sm:col-span-2">
+            <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 تفاصيل الطلب
               </label>
@@ -234,13 +238,25 @@ export const OrderFormModal: React.FC<OrderFormModalProps> = ({
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                الإجمالي / السعر
+                سعر الأوردر (بدون الدليفري)
               </label>
               <input
                 type="text"
                 value={totalPrice}
                 onChange={(e) => setTotalPrice(e.target.value)}
                 placeholder="مثال: ١٥٠٠ جنيه"
+                className="w-full min-h-[44px] px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-600 focus:bg-white"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                سعر الدليفري
+              </label>
+              <input
+                type="text"
+                value={deliveryFee}
+                onChange={(e) => setDeliveryFee(e.target.value)}
+                placeholder="مثال: ٦٠ جنيه"
                 className="w-full min-h-[44px] px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-sky-600 focus:bg-white"
               />
             </div>

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Coordinates, DeliveryOrder, LocationStatus, StartPoint } from '../types/messigo';
 import { buildGoogleMapsDirectionUrl, isOrderLocationReadyForRoute } from '../services/routingService';
+import { parsePriceToNumber } from './RoutePdfModal';
 
 interface OrdersReviewViewProps {
   orders: DeliveryOrder[];
@@ -61,8 +62,19 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
   const totalOrdersCount = orders.length;
   const activeOrders = orders.filter((o) => !o.excludedFromRoute);
   const excludedOrders = orders.filter((o) => o.excludedFromRoute);
-  const validOrdersCount = activeOrders.filter((o) => isOrderLocationReadyForRoute(o)).length;
+  const validOrders = activeOrders.filter((o) => isOrderLocationReadyForRoute(o));
+  const validOrdersCount = validOrders.length;
   const needsCorrectionCount = activeOrders.filter((o) => !isOrderLocationReadyForRoute(o)).length;
+
+  // Separate sums: 1) Order price without delivery, 2) Delivery fee
+  const totalOrdersNetSum = validOrders.reduce(
+    (sum, o) => sum + parsePriceToNumber(o.totalPrice),
+    0
+  );
+  const totalDeliveryFeeSum = validOrders.reduce(
+    (sum, o) => sum + parsePriceToNumber(o.deliveryFee),
+    0
+  );
 
   const filteredOrders = orders.filter((o) => {
     if (filter === 'valid') return !o.excludedFromRoute && isOrderLocationReadyForRoute(o);
@@ -268,6 +280,28 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
               </div>
             </div>
 
+            {/* Two Separate Financial Sums: Orders without Delivery vs Delivery Fees */}
+            {(totalOrdersNetSum > 0 || totalDeliveryFeeSum > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl flex items-center justify-between">
+                  <span className="text-xs font-bold text-sky-900">
+                    إجمالي الأوردرات (بدون الدليفري):
+                  </span>
+                  <span className="text-sm font-extrabold font-mono tabular-nums text-sky-800">
+                    {totalOrdersNetSum.toLocaleString('ar-EG')} ج.م
+                  </span>
+                </div>
+                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-900">
+                    إجمالي سعر الدليفري:
+                  </span>
+                  <span className="text-sm font-extrabold font-mono tabular-nums text-amber-800">
+                    {totalDeliveryFeeSum.toLocaleString('ar-EG')} ج.م
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Warning when some orders need correction */}
             {needsCorrectionCount > 0 && (
               <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -468,8 +502,16 @@ export const OrdersReviewView: React.FC<OrdersReviewViewProps> = ({
                       {order.totalPrice && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="font-semibold text-slate-800">
-                            الإجمالي: {order.totalPrice}
+                          <span className="font-semibold text-sky-800">
+                            الأوردر (بدون دليفري): {order.totalPrice}
+                          </span>
+                        </>
+                      )}
+                      {order.deliveryFee && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-semibold text-amber-800">
+                            سعر الدليفري: {order.deliveryFee}
                           </span>
                         </>
                       )}
