@@ -34,6 +34,7 @@ interface RouteAndDeliveryViewProps {
   onGoToReview: () => void;
   onReturnToActiveDay?: () => void;
   onShareRoute?: () => void;
+  onExportPdf?: () => void;
 }
 
 export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
@@ -46,6 +47,7 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
   onGoToReview,
   onReturnToActiveDay,
   onShareRoute,
+  onExportPdf,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -378,16 +380,28 @@ export const RouteAndDeliveryView: React.FC<RouteAndDeliveryViewProps> = ({
             <p className="text-xs text-slate-500 mt-0.5">{route.algorithmNote}</p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {onShareRoute && (
               <button
                 type="button"
                 onClick={onShareRoute}
                 className="min-h-[42px] px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shadow-xs"
-                title="مشاركة مسار التوصيل مع المندوب"
+                title="مشاركة مسار التوصيل أو ملف الـ PDF مع المندوب"
               >
                 <Share2 className="w-4 h-4 text-emerald-700" />
-                <span>مشاركة المسار</span>
+                <span>مشاركة المسار / PDF</span>
+              </button>
+            )}
+
+            {onExportPdf && (
+              <button
+                type="button"
+                onClick={onExportPdf}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shadow-xs"
+                title="معاينة ومشاركة أو طباعة ملف PDF"
+              >
+                <Printer className="w-4 h-4 text-sky-700" />
+                <span>بيان PDF</span>
               </button>
             )}
 

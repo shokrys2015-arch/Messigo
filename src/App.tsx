@@ -57,7 +57,11 @@ import { OrderFormModal } from './components/OrderFormModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { RoutePdfModal } from './components/RoutePdfModal';
 import { ShareRouteModal } from './components/ShareRouteModal';
-import { decodeSharedRouteFromLocation } from './services/shareService';
+import {
+  containsSharedRouteLink,
+  decodeSharedRouteFromLocation,
+  decodeSharedRouteFromText,
+} from './services/shareService';
 
 type ActiveTab = 'input' | 'review' | 'route' | 'history' | 'backup';
 
@@ -156,16 +160,74 @@ export default function App() {
     }, 4500);
   };
 
+  // Helper to activate a newly decoded shared route while safely archiving any previously open order
+  const activateIncomingSharedDay = async (
+    sharedDay: DayRecord,
+    existingDaysList: DayRecord[]
+  ): Promise<{
+    updatedDays: DayRecord[];
+    incomingDay: DayRecord;
+  }> => {
+    const incomingDay: DayRecord = {
+      ...sharedDay,
+      id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Archive any previously open non-empty order and remove empty blank drafts (just like "عمل أوردر جديد")
+    const cleanedExisting: DayRecord[] = [];
+    for (const d of existingDaysList) {
+      const isEmptyDraft = d.orders.length === 0 && !d.calculatedRoute && !d.rawInputText.trim();
+      if (isEmptyDraft) {
+        try {
+          await deleteDayRecordFromDb(d.id);
+        } catch {
+          // ignore
+        }
+      } else if (!d.isArchived) {
+        const archived: DayRecord = {
+          ...d,
+          isArchived: true,
+          updatedAt: new Date().toISOString(),
+        };
+        cleanedExisting.push(archived);
+        await saveDayRecord(archived);
+      } else {
+        cleanedExisting.push(d);
+      }
+    }
+
+    const updatedDays = [incomingDay, ...cleanedExisting];
+    await saveDayRecord(incomingDay);
+    await setActiveDayIdInDb(incomingDay.id);
+
+    // Refresh full road geometry from OSRM in the background for routable stops
+    const routableOrders = incomingDay.orders.filter(isOrderLocationReadyForRoute);
+    if (incomingDay.startPoint && routableOrders.length > 0) {
+      calculateOptimizedRoadRoute(incomingDay.startPoint, routableOrders)
+        .then(async (computedRoute) => {
+          const withRoute: DayRecord = { ...incomingDay, calculatedRoute: computedRoute };
+          await saveDayRecord(withRoute);
+          setDays((prev) => prev.map((d) => (d.id === withRoute.id ? withRoute : d)));
+        })
+        .catch(() => {});
+    }
+
+    return { updatedDays, incomingDay };
+  };
+
   // Load initial data from IndexedDB and handle shared delivery route deep link
   useEffect(() => {
     let mounted = true;
+    const initialHref = window.location.href;
 
     async function initApp() {
       try {
-        // 1. Decode shared route from URL first before anything else
+        // 1. Decode shared route from initial URL first before anything else
         let sharedDay: DayRecord | null = null;
         try {
-          sharedDay = await decodeSharedRouteFromLocation();
+          sharedDay = await decodeSharedRouteFromLocation(initialHref);
         } catch (err) {
           console.error('Failed to resolve shared route:', err);
         }
@@ -178,22 +240,19 @@ export default function App() {
         let allDays = loadedDays;
         let activeId = loadedActiveId;
         let viewingId = loadedActiveId;
-        let shouldOpenRouteTab = false;
+        let targetTab: ActiveTab | null = null;
 
         if (sharedDay) {
-          // Give the shared route a distinct ID if an existing day has the same ID
-          const incomingDay: DayRecord = {
-            ...sharedDay,
-            id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          };
+          const { updatedDays, incomingDay } = await activateIncomingSharedDay(
+            sharedDay,
+            loadedDays
+          );
+          if (!mounted) return;
 
-          allDays = [incomingDay, ...allDays];
-          await saveDayRecord(incomingDay);
-          await setActiveDayIdInDb(incomingDay.id);
-
+          allDays = updatedDays;
           activeId = incomingDay.id;
           viewingId = incomingDay.id;
-          shouldOpenRouteTab = true;
+          targetTab = incomingDay.calculatedRoute ? 'route' : 'review';
 
           try {
             window.history.replaceState(null, '', window.location.pathname);
@@ -206,28 +265,13 @@ export default function App() {
               `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
             );
           }, 300);
-
-          // Refresh full road geometry from OSRM in the background so the map polyline follows exact streets
-          if (incomingDay.startPoint && incomingDay.orders.length > 0) {
-            calculateOptimizedRoadRoute(incomingDay.startPoint, incomingDay.orders)
-              .then(async (computedRoute) => {
-                const withRoute = { ...incomingDay, calculatedRoute: computedRoute };
-                await saveDayRecord(withRoute);
-                if (mounted) {
-                  setDays((prev) =>
-                    prev.map((d) => (d.id === withRoute.id ? withRoute : d))
-                  );
-                }
-              })
-              .catch(() => {});
-          }
         }
 
         setDays(allDays);
         setActiveDayId(activeId);
         setViewingDayId(viewingId);
-        if (shouldOpenRouteTab) {
-          setActiveTab('route');
+        if (targetTab) {
+          setActiveTab(targetTab);
         }
         setIsDbLoaded(true);
       } catch (err) {
@@ -243,43 +287,31 @@ export default function App() {
     };
   }, []);
 
-  // Listen to hashchange, popstate, or pageshow if user clicks a shared link while app is already open
+  // Listen to hashchange or popstate if user opens a shared link while app is already open
   useEffect(() => {
+    if (!isDbLoaded) return;
+
     const handleUrlChange = async () => {
       try {
         const sharedDay = await decodeSharedRouteFromLocation();
         if (sharedDay) {
-          const incomingDay: DayRecord = {
-            ...sharedDay,
-            id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          };
-
-          setDays((prev) => [incomingDay, ...prev]);
-          await saveDayRecord(incomingDay);
-          await setActiveDayIdInDb(incomingDay.id);
-          setActiveDayId(incomingDay.id);
-          setViewingDayId(incomingDay.id);
-          setActiveTab('route');
-          showToast(
-            `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
-          );
           try {
             window.history.replaceState(null, '', window.location.pathname);
           } catch {
             // ignore
           }
 
-          if (incomingDay.startPoint && incomingDay.orders.length > 0) {
-            calculateOptimizedRoadRoute(incomingDay.startPoint, incomingDay.orders)
-              .then(async (computedRoute) => {
-                const withRoute = { ...incomingDay, calculatedRoute: computedRoute };
-                await saveDayRecord(withRoute);
-                setDays((prev) =>
-                  prev.map((d) => (d.id === withRoute.id ? withRoute : d))
-                );
-              })
-              .catch(() => {});
-          }
+          const { updatedDays, incomingDay } = await activateIncomingSharedDay(
+            sharedDay,
+            days
+          );
+          setDays(updatedDays);
+          setActiveDayId(incomingDay.id);
+          setViewingDayId(incomingDay.id);
+          setActiveTab(incomingDay.calculatedRoute ? 'route' : 'review');
+          showToast(
+            `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
+          );
         }
       } catch (err) {
         console.error('Failed to resolve shared route on URL change:', err);
@@ -288,13 +320,11 @@ export default function App() {
 
     window.addEventListener('hashchange', handleUrlChange);
     window.addEventListener('popstate', handleUrlChange);
-    window.addEventListener('pageshow', handleUrlChange);
     return () => {
       window.removeEventListener('hashchange', handleUrlChange);
       window.removeEventListener('popstate', handleUrlChange);
-      window.removeEventListener('pageshow', handleUrlChange);
     };
-  }, []);
+  }, [isDbLoaded, days]);
 
   // Currently viewed day record (either active today or an inspected historical day)
   const currentDay: DayRecord | undefined = useMemo(() => {
@@ -316,7 +346,7 @@ export default function App() {
     await saveDayRecord(updatedDay);
   };
 
-  // 1. Handle WhatsApp Bulk Message Analysis
+  // 1. Handle WhatsApp Bulk Message Analysis (or pasted Share Route Link)
   const handleAnalyzeOrders = async () => {
     if (!currentDay || !currentDay.rawInputText.trim()) return;
     setIsAnalyzing(true);
@@ -324,7 +354,36 @@ export default function App() {
     setRouteError(null);
 
     try {
-      const blocks = splitBulkWhatsappMessages(currentDay.rawInputText);
+      const inputStr = currentDay.rawInputText.trim();
+
+      // Check first if the user pasted a Messigo shared route link or WhatsApp share message
+      if (containsSharedRouteLink(inputStr)) {
+        const sharedDay = await decodeSharedRouteFromText(inputStr);
+        if (sharedDay) {
+          const clearedCurrent: DayRecord = { ...currentDay, rawInputText: '' };
+          await saveDayRecord(clearedCurrent);
+          const listWithCleared = days.map((d) =>
+            d.id === clearedCurrent.id ? clearedCurrent : d
+          );
+
+          const { updatedDays, incomingDay } = await activateIncomingSharedDay(
+            sharedDay,
+            listWithCleared
+          );
+          setDays(updatedDays);
+          setActiveDayId(incomingDay.id);
+          setViewingDayId(incomingDay.id);
+          setIsAnalyzing(false);
+          setAnalyzingProgress(null);
+          setActiveTab(incomingDay.calculatedRoute ? 'route' : 'review');
+          showToast(
+            `🚚 تم فتح وحفظ مسار التوصيل المشترك: «${incomingDay.title}» (${incomingDay.orders.length} أوردر) بنجاح`
+          );
+          return;
+        }
+      }
+
+      const blocks = splitBulkWhatsappMessages(inputStr);
       const parsedOrders = blocks.map((b) =>
         parseSingleOrderMessage(b.text, b.uncertainSplit)
       );
@@ -336,6 +395,35 @@ export default function App() {
           setAnalyzingProgress({ current, total });
         }
       );
+
+      // If the currently open day ALREADY had a calculated route (i.e. a completed previous order was open),
+      // archive the previous order automatically and start a fresh order batch for the new orders!
+      if (currentDay.calculatedRoute || isViewingHistoricalDay) {
+        const clearedCurrent: DayRecord = { ...currentDay, rawInputText: '' };
+        const { archivedDay, newDay } = await startNewDayInDb(clearedCurrent);
+        const recalculated = recalculateOrdersLocationStatus(resolvedOrders);
+        const populatedNewDay: DayRecord = {
+          ...newDay,
+          orders: recalculated,
+        };
+        await saveDayRecord(populatedNewDay);
+
+        setDays((prev) => {
+          const base = archivedDay
+            ? prev.map((d) => (d.id === archivedDay.id ? archivedDay : d))
+            : prev.filter((d) => d.id !== clearedCurrent.id);
+          return [populatedNewDay, ...base];
+        });
+        setActiveDayId(populatedNewDay.id);
+        setViewingDayId(populatedNewDay.id);
+        setIsAnalyzing(false);
+        setAnalyzingProgress(null);
+        setActiveTab('review');
+        showToast(
+          `تم حفظ الأوردر السابق في السجل وإنشاء أوردر جديد يحتوي على ${resolvedOrders.length} شحنة للمراجعة.`
+        );
+        return;
+      }
 
       const combinedOrders = recalculateOrdersLocationStatus([
         ...currentDay.orders,
@@ -1008,6 +1096,7 @@ export default function App() {
             onGoToReview={() => setActiveTab('review')}
             onReturnToActiveDay={() => setViewingDayId(activeDayId)}
             onShareRoute={() => setShareModalState({ isOpen: true, day: currentDay })}
+            onExportPdf={() => handleOpenPdfExport(currentDay)}
           />
         )}
 

@@ -1,19 +1,18 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Printer,
   X,
   Share2,
   Calendar,
   MapPin,
-  Route,
-  Clock,
-  Coins,
-  CheckCircle2,
   Copy,
   User,
+  Download,
+  Loader2,
 } from 'lucide-react';
-import { CalculatedRoute, DeliveryOrder } from '../types/messigo';
+import { CalculatedRoute, DayRecord, DeliveryOrder } from '../types/messigo';
 import { formatDistanceArabic, formatDurationArabic } from '../services/routingService';
+import { downloadRoutePdf, shareOrDownloadRoutePdf } from '../services/pdfService';
 
 interface RoutePdfModalProps {
   isOpen: boolean;
@@ -47,6 +46,8 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
   onCopySuccess,
 }) => {
   const printAreaRef = useRef<HTMLDivElement | null>(null);
+  const [isSharingPdf, setIsSharingPdf] = useState(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   if (!isOpen) return null;
 
@@ -76,8 +77,46 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
     return sum + parsePriceToNumber(o.deliveryFee);
   }, 0);
 
+  const dayRecordForPdf: DayRecord = {
+    id: 'pdf_export',
+    title: dayTitle,
+    dateKey,
+    courierName,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    rawInputText: '',
+    orders,
+    startPoint: route?.startPoint || null,
+    calculatedRoute: route,
+    isArchived: false,
+  };
+
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleSharePdfFile = async () => {
+    if (isSharingPdf) return;
+    setIsSharingPdf(true);
+    try {
+      await shareOrDownloadRoutePdf(dayRecordForPdf, onCopySuccess);
+    } catch (err) {
+      console.error('Failed to share PDF:', err);
+    } finally {
+      setIsSharingPdf(false);
+    }
+  };
+
+  const handleDownloadPdfFile = async () => {
+    if (isDownloadingPdf) return;
+    setIsDownloadingPdf(true);
+    try {
+      await downloadRoutePdf(dayRecordForPdf, onCopySuccess);
+    } catch (err) {
+      console.error('Failed to download PDF:', err);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   const handleCopyWhatsappManifest = () => {
@@ -131,32 +170,62 @@ export const RoutePdfModal: React.FC<RoutePdfModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900">
-                بيان وتفاصيل الأوردرات وخط السير للطباعة والتصدير
+                بيان وتفاصيل الأوردرات وخط السير (مشاركة PDF / تنزيل / طباعة)
               </h3>
               <p className="text-xs text-slate-500">
-                يمكنك حفظ البيان كملف PDF رسمي أو طباعته على ورق A4، أو نسخ نسخة للمندوب على واتساب.
+                يمكنك إرسال البيان كملف PDF مباشرةً على واتساب، أو تنزيله على جهازك، أو طباعته.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSharePdfFile}
+              disabled={isSharingPdf}
+              className="min-h-[40px] px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+              title="إرسال ومشاركة ملف الـ PDF مباشرة عبر واتساب أو التطبيقات"
+            >
+              {isSharingPdf ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Share2 className="w-4 h-4" />
+              )}
+              <span>مشاركة / إرسال PDF</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadPdfFile}
+              disabled={isDownloadingPdf}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+              title="تنزيل ملف PDF مباشرة على جهازك"
+            >
+              {isDownloadingPdf ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              <span>تنزيل ملف PDF</span>
+            </button>
+
             <button
               type="button"
               onClick={handleCopyWhatsappManifest}
               className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
-              title="نسخ البيان بتنسيق واتساب للمندوب"
+              title="نسخ البيان كنص واتساب للمندوب"
             >
               <Copy className="w-4 h-4 text-emerald-600" />
-              <span>نسخ لواتساب</span>
+              <span>نسخ كنص واتساب</span>
             </button>
 
             <button
               type="button"
               onClick={handlePrint}
-              className="min-h-[40px] px-4 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+              className="min-h-[40px] px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
             >
-              <Printer className="w-4 h-4" />
-              <span>طباعة / حفظ كـ PDF</span>
+              <Printer className="w-4 h-4 text-slate-600" />
+              <span>طباعة</span>
             </button>
 
             <button

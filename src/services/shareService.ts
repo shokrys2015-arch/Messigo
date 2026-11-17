@@ -2,10 +2,10 @@ import {
   CalculatedRoute,
   DayRecord,
   DeliveryOrder,
-  LocationStatus,
   StartPoint,
 } from '../types/messigo';
 import { parsePriceToNumber } from '../components/RoutePdfModal';
+import { calculateDistanceMetersBetweenCoords } from './geocodingService';
 
 /**
  * Downsamples geometry polyline coordinates to a reasonable number of points
@@ -176,7 +176,10 @@ export function createMicroDayPayload(day: DayRecord): MicroDayPayload {
  * Reconstructs a full DayRecord from the ultra-compact micro payload
  */
 export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
-  const dayId = `day_${Date.now()}`;
+  const nowMs = Date.now();
+  const randSuffix = Math.random().toString(36).substring(2, 6);
+  const dayId = `shared_${nowMs}_${randSuffix}`;
+
   const orders: DeliveryOrder[] = (micro.o || []).map((tuple, idx) => {
     const lat = tuple[4];
     const lng = tuple[5];
@@ -187,7 +190,7 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
       !Number.isNaN(lng);
 
     return {
-      id: `ord_${idx + 1}_${Date.now()}`,
+      id: `ord_${idx + 1}_${nowMs}_${Math.random().toString(36).substring(2, 5)}`,
       customerName: tuple[0] || '',
       phone: tuple[1] || '',
       address: tuple[2] || '',
@@ -195,7 +198,7 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
       mapUrl: '',
       coordinates: hasCoords ? { lat, lng } : null,
       locationStatus: hasCoords ? 'الموقع صحيح' : 'يحتاج إلى مراجعة',
-      locationConfirmedByUser: true,
+      locationConfirmedByUser: hasCoords,
       orderDetails: tuple[6] || '',
       totalPrice: tuple[3] || '',
       deliveryFee: tuple[7] || '',
@@ -230,18 +233,33 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
         }
       : null;
 
-  // Reconstruct immediate calculatedRoute if orders exist
+  // Reconstruct immediate calculatedRoute with estimated road distances so metrics are immediately visible
   let calculatedRoute: CalculatedRoute | null = null;
 
   if (startPoint && routableOrders.length > 0) {
-    const legs = routableOrders.map((ord, idx) => ({
-      orderId: ord.id,
-      visitNumber: idx + 1,
-      distanceMeters: 0,
-      durationSeconds: 0,
-      cumulativeDistanceMeters: 0,
-      cumulativeDurationSeconds: 0,
-    }));
+    let cumulativeDistanceMeters = 0;
+    let cumulativeDurationSeconds = 0;
+    let prevCoords = startPoint.coordinates;
+
+    const legs = routableOrders.map((ord, idx) => {
+      const currCoords = ord.coordinates!;
+      const straightDist = calculateDistanceMetersBetweenCoords(prevCoords, currCoords);
+      // Approximate road distance factor (~1.28x straight line) and urban speed (~30 km/h = 8.33 m/s)
+      const estRoadDist = Math.round(straightDist * 1.28);
+      const estDuration = Math.max(60, Math.round(estRoadDist / 8.33));
+      cumulativeDistanceMeters += estRoadDist;
+      cumulativeDurationSeconds += estDuration;
+      prevCoords = currCoords;
+
+      return {
+        orderId: ord.id,
+        visitNumber: idx + 1,
+        distanceMeters: estRoadDist,
+        durationSeconds: estDuration,
+        cumulativeDistanceMeters,
+        cumulativeDurationSeconds,
+      };
+    });
 
     const geometry: [number, number][] = [
       [startPoint.coordinates.lat, startPoint.coordinates.lng],
@@ -255,11 +273,11 @@ export function reconstructDayFromMicro(micro: MicroDayPayload): DayRecord {
       startPoint,
       orderedOrderIds: routableOrders.map((o) => o.id),
       legs,
-      totalDistanceMeters: 0,
-      totalDurationSeconds: 0,
+      totalDistanceMeters: cumulativeDistanceMeters,
+      totalDurationSeconds: cumulativeDurationSeconds,
       geometry,
       algorithmUsed: 'exact-open-tsp',
-      algorithmNote: 'تم استلام ترتيب خط السير المشترك وجاري تحديث رسم الطريق الفعلي.',
+      algorithmNote: 'تم فتح مسار التوصيل المشترك بالترتيب المعتمد للمندوب.',
       excludedOrderSummary: [],
     };
   }
@@ -335,8 +353,9 @@ export async function compressDataToUrlSafe(data: unknown): Promise<string> {
  */
 export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promise<T | null> {
   try {
-    if (encoded.startsWith('z_')) {
-      const rawB64 = encoded.slice(2);
+    const clean = encoded.trim();
+    if (clean.startsWith('z_')) {
+      const rawB64 = clean.slice(2);
       let standardB64 = rawB64.replace(/-/g, '+').replace(/_/g, '/');
       while (standardB64.length % 4 !== 0) standardB64 += '=';
       const binary = atob(standardB64);
@@ -348,8 +367,8 @@ export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promi
       const decompressedStream = stream.pipeThrough(new DecompressionStream('gzip'));
       const text = await new Response(decompressedStream).text();
       return JSON.parse(text) as T;
-    } else if (encoded.startsWith('z')) {
-      const standardB64 = pureAlphanumericToBase64(encoded.slice(1));
+    } else if (clean.startsWith('z')) {
+      const standardB64 = pureAlphanumericToBase64(clean.slice(1));
       const binary = atob(standardB64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
@@ -359,11 +378,11 @@ export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promi
       const decompressedStream = stream.pipeThrough(new DecompressionStream('gzip'));
       const text = await new Response(decompressedStream).text();
       return JSON.parse(text) as T;
-    } else if (encoded.startsWith('b_')) {
-      const jsonStr = fromBase64Utf8(encoded.slice(2));
+    } else if (clean.startsWith('b_')) {
+      const jsonStr = fromBase64Utf8(clean.slice(2));
       return JSON.parse(jsonStr) as T;
-    } else if (encoded.startsWith('b')) {
-      const standardB64 = pureAlphanumericToBase64(encoded.slice(1));
+    } else if (clean.startsWith('b')) {
+      const standardB64 = pureAlphanumericToBase64(clean.slice(1));
       const binary = atob(standardB64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
@@ -371,7 +390,7 @@ export async function decompressDataFromUrlSafe<T = any>(encoded: string): Promi
       }
       return JSON.parse(new TextDecoder().decode(bytes)) as T;
     } else {
-      const jsonStr = fromBase64Utf8(encoded);
+      const jsonStr = fromBase64Utf8(clean);
       return JSON.parse(jsonStr) as T;
     }
   } catch (err) {
@@ -410,7 +429,7 @@ export async function fetchSharedRoute(shortId: string): Promise<DayRecord | nul
     if (json?.success && json?.data && Array.isArray(json.data.orders)) {
       const data = json.data;
       return {
-        id: data.id || `shared_${Date.now()}`,
+        id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         title: data.title || 'مسار توصيل مشترك',
         dateKey: data.dateKey || new Date().toISOString().split('T')[0],
         courierName: data.courierName,
@@ -446,7 +465,19 @@ export function generateShareableRouteUrl(day: DayRecord): string {
 }
 
 /**
- * Decodes a share URL hash or query param into a DayRecord
+ * Checks whether a given text or URL contains a Messigo shared route link/payload
+ */
+export function containsSharedRouteLink(text: string): boolean {
+  if (!text) return false;
+  return (
+    /[#&?]d=([a-zA-Z0-9_\-~]{12,})/.test(text) ||
+    /[#&?]share_route=([a-zA-Z0-9_\-~=]{12,})/.test(text) ||
+    /(?:[#&?]r=|\/r\/)([a-zA-Z0-9_-]{4,20})/.test(text)
+  );
+}
+
+/**
+ * Decodes a share URL hash, query param, or pasted WhatsApp text into a DayRecord
  */
 export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
   try {
@@ -456,7 +487,7 @@ export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
       const match = hashOrSearch.match(/[#&?]d=([a-zA-Z0-9_\-~]+)/);
       if (match && match[1]) encodedData = match[1];
     } else if (hashOrSearch.includes('share_route=')) {
-      const match = hashOrSearch.match(/[#&?]share_route=([^&]+)/);
+      const match = hashOrSearch.match(/[#&?]share_route=([^&\s]+)/);
       if (match && match[1]) encodedData = match[1];
     }
 
@@ -483,7 +514,7 @@ export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
       }
       if (parsed.orders && Array.isArray(parsed.orders)) {
         return {
-          id: parsed.id || `day_${Date.now()}`,
+          id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           title: parsed.title || 'مسار توصيل مشترك',
           dateKey: parsed.dateKey || new Date().toISOString().split('T')[0],
           courierName: parsed.courierName,
@@ -504,46 +535,68 @@ export function decodeShareableRoute(hashOrSearch: string): DayRecord | null {
 }
 
 /**
- * Universal async resolver for shared routes from URL (handles server short code, client gzip, and legacy)
+ * Universal async resolver for shared routes from ANY URL or pasted text
+ * (handles compressed ?d=..., #d=..., server short code ?r=..., /r/..., and legacy #share_route=...)
  */
-export async function decodeSharedRouteFromLocation(): Promise<DayRecord | null> {
-  const urlParams = new URLSearchParams(window.location.search);
-
-  // 1. Check for server short code: ?r=... or /r/... or #r=...
-  let shortCode = urlParams.get('r');
-  if (!shortCode && window.location.hash) {
-    const m = window.location.hash.match(/[#&?]r=([a-zA-Z0-9_-]+)/);
-    if (m && m[1]) shortCode = m[1];
-  }
-  if (!shortCode && window.location.pathname.startsWith('/r/')) {
-    const m = window.location.pathname.match(/^\/r\/([a-zA-Z0-9_-]+)/);
-    if (m && m[1]) shortCode = m[1];
-  }
-  if (shortCode) {
-    const day = await fetchSharedRoute(shortCode);
-    if (day) return day;
+export async function decodeSharedRouteFromText(rawInput: string): Promise<DayRecord | null> {
+  if (!rawInput || !rawInput.trim()) return null;
+  let text = rawInput.trim();
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    // keep raw text if % decoding fails
   }
 
-  // 2. Check for compressed client payload: ?d=... or #d=...
-  let compressedData = urlParams.get('d');
-  if (!compressedData && window.location.hash) {
-    const m = window.location.hash.match(/[#&?]d=([a-zA-Z0-9_\-~]+)/);
-    if (m && m[1]) compressedData = m[1];
-  }
-  if (compressedData) {
-    const micro = await decompressDataFromUrlSafe<MicroDayPayload>(compressedData);
-    if (micro && Array.isArray(micro.o)) {
-      return reconstructDayFromMicro(micro);
+  // 1. Check for compressed client payload: ?d=... or #d=... or &d=...
+  const dMatch = text.match(/[#&?]d=([a-zA-Z0-9_\-~]+)/);
+  if (dMatch && dMatch[1]) {
+    const decoded = await decompressDataFromUrlSafe< any >(dMatch[1]);
+    if (decoded) {
+      if (Array.isArray(decoded.o)) {
+        return reconstructDayFromMicro(decoded as MicroDayPayload);
+      }
+      if (Array.isArray(decoded.orders)) {
+        return {
+          id: `shared_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          title: decoded.title || 'مسار توصيل مشترك',
+          dateKey: decoded.dateKey || new Date().toISOString().split('T')[0],
+          courierName: decoded.courierName,
+          createdAt: decoded.createdAt || new Date().toISOString(),
+          updatedAt: decoded.updatedAt || new Date().toISOString(),
+          rawInputText: '',
+          isArchived: false,
+          startPoint: decoded.startPoint || null,
+          calculatedRoute: decoded.calculatedRoute || null,
+          orders: decoded.orders,
+        };
+      }
     }
   }
 
+  // 2. Check for server short code: ?r=... or #r=... or /r/...
+  const rMatch =
+    text.match(/[#&?]r=([a-zA-Z0-9_-]{4,20})/) ||
+    text.match(/\/r\/([a-zA-Z0-9_-]{4,20})/);
+  if (rMatch && rMatch[1]) {
+    const day = await fetchSharedRoute(rMatch[1]);
+    if (day) return day;
+  }
+
   // 3. Check for legacy share_route=...
-  const rawHashOrSearch = window.location.hash || window.location.search;
-  if (rawHashOrSearch.includes('share_route=')) {
-    return decodeShareableRoute(rawHashOrSearch);
+  if (text.includes('share_route=')) {
+    const legacy = decodeShareableRoute(text);
+    if (legacy) return legacy;
   }
 
   return null;
+}
+
+/**
+ * Universal async resolver for shared routes from current browser location
+ */
+export async function decodeSharedRouteFromLocation(hrefOverride?: string): Promise<DayRecord | null> {
+  const targetHref = hrefOverride || window.location.href;
+  return decodeSharedRouteFromText(targetHref);
 }
 
 /**

@@ -7,11 +7,13 @@ import {
   Trash2,
   ClipboardPaste,
   CheckCircle2,
+  Share2,
 } from 'lucide-react';
 import {
   EXACT_PROMPT_SAMPLE_MESSAGE,
   MULTI_ORDER_TEST_SAMPLE,
 } from '../services/whatsappParser';
+import { containsSharedRouteLink } from '../services/shareService';
 
 interface WhatsappInputViewProps {
   rawText: string;
@@ -36,15 +38,17 @@ export const WhatsappInputView: React.FC<WhatsappInputViewProps> = ({
   currentOrdersCount,
   onGoToReview,
 }) => {
+  const isSharedRouteDetected = containsSharedRouteLink(rawText);
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Main Input Column */}
       <div className="lg:col-span-8 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">إدخال رسائل واتساب</h2>
+            <h2 className="text-xl font-bold text-slate-900">إدخال رسائل واتساب أو رابط مسار مشترك</h2>
             <p className="text-sm text-slate-600 mt-1">
-              الصق رسائل الأوردرات المنسوخة من واتساب دفعة واحدة ليقوم Messigo باستخراج العملاء والعناوين والمواقع تلقائيًا.
+              الصق رسائل الأوردرات المنسوخة من واتساب دفعة واحدة، أو الصق رابط مشاركة مسار التوصيل لفتحه فوراً.
             </p>
           </div>
 
@@ -71,10 +75,22 @@ export const WhatsappInputView: React.FC<WhatsappInputViewProps> = ({
             value={rawText}
             onChange={(e) => onChangeRawText(e.target.value)}
             rows={12}
-            placeholder={`الصق رسائل واتساب هنا...\n\nمثال:\nالأستاذ محمود الخطيب\nت: 010000000000\nالنادي الأهلي – فرع مدينة نصر\n٤ تيشيرتات\nالإجمالي: ١٥٠٠ جنيه\nالموقع: النادي الأهلي – فرع مدينة نصر، القاهرة`}
+            placeholder={`الصق رسائل واتساب أو رابط مسار مشترك هنا...\n\nمثال:\nالأستاذ محمود الخطيب\nت: 010000000000\nالنادي الأهلي – فرع مدينة نصر\n٤ تيشيرتات\nالسعر: ١٥٠٠ جنيه\nدليفري: ٦٠ جنيه\nالموقع: النادي الأهلي – فرع مدينة نصر، القاهرة`}
             className="w-full p-4 text-sm sm:text-base text-slate-900 bg-slate-50 border border-slate-200 rounded-2xl focus:outline-none focus:border-sky-600 focus:bg-white leading-relaxed resize-y font-sans"
           />
         </div>
+
+        {/* Shared Route Link Detected Banner */}
+        {isSharedRouteDetected && !isAnalyzing && (
+          <div className="mt-4 p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3 text-emerald-950">
+            <div className="flex items-center gap-2.5 text-xs sm:text-sm font-bold">
+              <Share2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <span>
+                تم التعرف على رابط مشاركة مسار توصيل! اضغط على الزر بالأسفل لفتح المسار المشترك فوراً في سجل مستقل.
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Analyzing Progress Indicator */}
         {isAnalyzing && (
@@ -94,10 +110,23 @@ export const WhatsappInputView: React.FC<WhatsappInputViewProps> = ({
             type="button"
             disabled={isAnalyzing || !rawText.trim()}
             onClick={onAnalyzeOrders}
-            className="min-h-[48px] px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-sm sm:text-base font-bold flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-xs"
+            className={`min-h-[48px] px-6 py-2.5 rounded-xl disabled:opacity-50 text-white text-sm sm:text-base font-bold flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-xs ${
+              isSharedRouteDetected
+                ? 'bg-emerald-600 hover:bg-emerald-700'
+                : 'bg-sky-600 hover:bg-sky-700'
+            }`}
           >
-            <Sparkles className="w-4 h-4" />
-            <span>تحليل الأوردرات</span>
+            {isSharedRouteDetected ? (
+              <>
+                <Share2 className="w-4 h-4" />
+                <span>فتح المسار المشترك الآن</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                <span>تحليل الأوردرات</span>
+              </>
+            )}
           </button>
 
           <button
@@ -162,13 +191,13 @@ export const WhatsappInputView: React.FC<WhatsappInputViewProps> = ({
             <li className="flex items-start gap-2">
               <span className="font-mono font-bold text-sky-600 tabular-nums">2.</span>
               <span>
-                <strong>دعم الأرقام العربية والإنجليزية:</strong> يحول التطبيق الأرقام العربية (٠١٢٣...) تلقائيًا ويميز بدقة بين رقم التليفون، السعر الإجمالي، والإحداثيات.
+                <strong>فصل سعر الأوردر عن الدليفري:</strong> يستخرج التطبيق سعر الأوردر (بدون الدليفري) وسعر الدليفري في تجميعتين منفصلتين تمامًا دون تكرار.
               </span>
             </li>
             <li className="flex items-start gap-2">
               <span className="font-mono font-bold text-sky-600 tabular-nums">3.</span>
               <span>
-                <strong>التحقق من روابط الخرائط:</strong> يستخرج الإحداثيات المباشرة (`q=lat,lng` أو `@lat,lng`). وإذا كان الرابط بحثًا عن مكان (بدون إحداثيات رقمية)، يبحث عنه عبر خرائط OpenStreetMap ويعرضه لك لتأكيده.
+                <strong>فتح روابط المشاركة:</strong> يمكنك فتح رابط المشاركة مباشرةً من المتصفح أو لصقه هنا ليتم حفظ الأوردر السابق وفتح المسار المشترك فورًا.
               </span>
             </li>
           </ul>

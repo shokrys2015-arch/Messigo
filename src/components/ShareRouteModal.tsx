@@ -1,17 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Calendar,
   Check,
   CheckCircle2,
   Copy,
-  ExternalLink,
+  Download,
+  FileText,
   Loader2,
-  MapPin,
   MessageCircle,
   Navigation,
   Route,
   Share2,
-  Sparkles,
   User,
   X,
 } from 'lucide-react';
@@ -23,6 +21,7 @@ import {
 } from '../services/shareService';
 import { parsePriceToNumber } from './RoutePdfModal';
 import { formatDistanceArabic } from '../services/routingService';
+import { downloadRoutePdf, shareOrDownloadRoutePdf } from '../services/pdfService';
 
 interface ShareRouteModalProps {
   isOpen: boolean;
@@ -43,6 +42,8 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   const [copiedText, setCopiedText] = useState(false);
   const [shortUrl, setShortUrl] = useState<string>('');
   const [isGeneratingUrl, setIsGeneratingUrl] = useState<boolean>(true);
+  const [isSharingPdf, setIsSharingPdf] = useState<boolean>(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
 
   // Generate short URL asynchronously whenever the modal opens or the day changes
   useEffect(() => {
@@ -71,13 +72,12 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
   }, [isOpen, day]);
 
   // Compute WhatsApp text and two separate totals
-  const { whatsappText, totalOrdersNetPrice, totalDeliveryFee, deliveredOrders } = useMemo(() => {
+  const { whatsappText, totalOrdersNetPrice, totalDeliveryFee } = useMemo(() => {
     if (!day) {
       return {
         whatsappText: '',
         totalOrdersNetPrice: 0,
         totalDeliveryFee: 0,
-        deliveredOrders: 0,
       };
     }
 
@@ -91,15 +91,11 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
       (sum, o) => sum + parsePriceToNumber(o.deliveryFee),
       0
     );
-    const delivered = activeOrders.filter(
-      (o) => o.deliveryStatus === 'تم التسليم'
-    ).length;
 
     return {
       whatsappText: text,
       totalOrdersNetPrice: netPrice,
       totalDeliveryFee: delFee,
-      deliveredOrders: delivered,
     };
   }, [day, shortUrl]);
 
@@ -137,7 +133,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     }
   };
 
-  const handleOpenWhatsapp = (e?: React.MouseEvent) => {
+  const handleOpenWhatsapp = () => {
     if (!whatsappUrl) return;
     try {
       window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
@@ -170,6 +166,30 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
     }
   };
 
+  const handleSharePdf = async () => {
+    if (isSharingPdf) return;
+    setIsSharingPdf(true);
+    try {
+      await shareOrDownloadRoutePdf(day, onCopySuccess);
+    } catch (err) {
+      console.error('Failed to share PDF:', err);
+    } finally {
+      setIsSharingPdf(false);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (isDownloadingPdf) return;
+    setIsDownloadingPdf(true);
+    try {
+      await downloadRoutePdf(day, onCopySuccess);
+    } catch (err) {
+      console.error('Failed to download PDF:', err);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   const handleNativeShare = async () => {
     let urlToUse = shortUrl;
     if (!urlToUse) {
@@ -185,7 +205,6 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
         url: urlToUse,
       });
     } catch (err) {
-      // User cancelled or share failed silently
       console.log('Share dismissed or failed', err);
     }
   };
@@ -213,7 +232,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
                 مشاركة مسار التوصيل مع المندوب
               </h3>
               <p className="text-xs text-slate-600">
-                رابط مباشر يفتح فوراً مسار التوصيل واللوكيشنز على هاتف المندوب
+                أرسل رابط المسار المباشر أو ملف الـ PDF الكامل للمندوب على واتساب
               </p>
             </div>
           </div>
@@ -291,22 +310,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
             )}
           </div>
 
-          {/* Feature Highlight Note */}
-          <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-3.5 text-xs text-emerald-900 flex items-start gap-2.5">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <div className="leading-relaxed">
-              <strong>كيف يفتح المندوب الرابط؟</strong>
-              <br />
-              عند الضغط على الرابط في واتساب، سيفتح للمندوب فوراً تبويب{' '}
-              <span className="font-bold underline decoration-emerald-500">
-                &quot;مسار التوصيل&quot;
-              </span>{' '}
-              جاهزاً بالترتيب، ومزوداً بزر ملاحة لكل عميل في Google Maps، وأرقام هواتف
-              الاتصال، والمبالغ المطلوبة.
-            </div>
-          </div>
-
-          {/* Primary Action 1: WhatsApp Share */}
+          {/* Primary Action 1: WhatsApp Link Share */}
           {isGeneratingUrl || !shortUrl ? (
             <div className="w-full min-h-[50px] py-3 px-4 rounded-2xl bg-slate-200 text-slate-600 font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 cursor-wait select-none">
               <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
@@ -318,7 +322,6 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => {
-                // If on mobile browser where popups might be blocked, this ensures opening
                 if (!whatsappUrl) {
                   e.preventDefault();
                   handleOpenWhatsapp();
@@ -327,11 +330,64 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
               className="w-full min-h-[50px] py-3 px-4 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-emerald-500/20 hover:shadow-lg transition-all active:scale-[0.99] no-underline"
             >
               <MessageCircle className="w-5 h-5 fill-white" />
-              <span>إرسال عبر واتساب للمندوب</span>
+              <span>إرسال الرابط عبر واتساب للمندوب</span>
             </a>
           )}
 
-          {/* Primary Action 2: Copy Link */}
+          {/* Primary Action 2: Share / Send PDF File Directly */}
+          <div className="bg-sky-50/70 border border-sky-200 rounded-2xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-bold text-sky-950">
+                <FileText className="w-4 h-4 text-sky-600" />
+                <span>مشاركة بيان الأوردرات كملف PDF</span>
+              </div>
+              <span className="text-[10px] font-semibold bg-sky-100 text-sky-800 px-2 py-0.5 rounded-full">
+                إرسال ملف PDF بدون طباعة
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleSharePdf}
+                disabled={isSharingPdf}
+                className="min-h-[44px] py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-colors"
+              >
+                {isSharingPdf ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>جاري تجهيز الـ PDF...</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-4 h-4" />
+                    <span>مشاركة / إرسال PDF</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={isDownloadingPdf}
+                className="min-h-[44px] py-2.5 px-4 rounded-xl bg-white hover:bg-slate-50 border border-sky-300 disabled:opacity-60 text-sky-900 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors"
+              >
+                {isDownloadingPdf ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+                    <span>جاري التنزيل...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 text-sky-700" />
+                    <span>تنزيل ملف PDF</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Primary Action 3: Copy Link */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
@@ -404,7 +460,7 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
             </button>
           </div>
 
-          {/* Action 3: Native Share (Mobile) */}
+          {/* Action 4: Native Share (Mobile) */}
           {hasNativeShare && (
             <button
               type="button"
@@ -412,11 +468,11 @@ export const ShareRouteModal: React.FC<ShareRouteModalProps> = ({
               className="w-full min-h-[42px] py-2.5 px-4 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-800 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
             >
               <Share2 className="w-4 h-4 text-slate-600" />
-              <span>مشاركة عبر تطبيقات أخرى (تليجرام، رسائل...)</span>
+              <span>مشاركة الرابط عبر تطبيقات أخرى (تليجرام، رسائل...)</span>
             </button>
           )}
 
-          {/* Action 4: Open Delivery Route View in Current Session */}
+          {/* Action 5: Open Delivery Route View in Current Session */}
           {onOpenRouteView && (
             <div className="pt-2 border-t border-slate-100">
               <button
